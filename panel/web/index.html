@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1f2430">
+<title>Каскад</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true">
+  <defs>
+    <filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1100" height="520">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <symbol id="i-mark" viewBox="0 0 24 24"><path d="M3 7h6l6 10h6M3 17h6l2.4-4M15 7h6"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.8 3-6 6.5-6s5.9 2.2 6.5 6M16 4.8a3.5 3.5 0 0 1 0 6.400M18.5 14.5c1.7.8 2.7 2.8 3 5.5"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="m10 9 5 3-5 3z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2.5"/><rect x="3" y="13" width="18" height="7" rx="2.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c3 3 3 16 0 19M12 2.5c-3 3-3 16 0 19"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4c5-2.5 9 2.5 14 0v10c-5 2.5-9-2.5-14 0"/></symbol>
+</svg>
+
+<section id="setup" class="login" hidden>
+  <div id="setup-wait" class="card login-box" hidden>
+    <span class="logo big"><svg><use href="#i-mark"/></svg></span>
+    <h1>Панель ещё не настроена</h1>
+    <p class="setup-text">Открой одноразовую ссылку, которую установщик показал в терминале. Новую ссылку покажет команда на сервере 1:</p>
+    <code class="setup-cmd">awg-cascade setup-link</code>
+  </div>
+
+  <form id="admin-form" class="card login-box" hidden>
+    <span class="logo big"><svg><use href="#i-mark"/></svg></span>
+    <h1>Создай администратора</h1>
+    <p class="setup-text">С этим именем и паролем ты будешь входить в панель.</p>
+    <label for="admin-user">Имя администратора</label>
+    <input id="admin-user" autocomplete="username" required minlength="3" maxlength="32" autocapitalize="none" spellcheck="false">
+    <label for="admin-pass">Пароль, не короче 10 символов</label>
+    <input id="admin-pass" type="password" autocomplete="new-password" required minlength="10">
+    <label for="admin-pass2">Пароль ещё раз</label>
+    <input id="admin-pass2" type="password" autocomplete="new-password" required minlength="10">
+    <p id="admin-error" class="error" role="alert" hidden></p>
+    <button class="primary wide" type="submit">Создать</button>
+  </form>
+
+  <form id="exit-form" class="card setup-box" hidden>
+    <span class="logo big"><svg><use href="#i-mark"/></svg></span>
+    <h1>Подключи сервер 2</h1>
+    <p class="setup-text">Это зарубежный сервер, через который пойдёт трафик. На нём нужен чистый Ubuntu или Debian и доступ root.</p>
+    <div class="setup-row">
+      <div>
+        <label for="exit-ip">IP-адрес сервера 2</label>
+        <input id="exit-ip" inputmode="decimal" autocomplete="off" required placeholder="203.0.113.10" spellcheck="false">
+      </div>
+      <div>
+        <label for="exit-port">Порт SSH</label>
+        <input id="exit-port" type="number" min="1" max="65535" value="22" required>
+      </div>
+    </div>
+    <label for="exit-pass">Пароль root на сервере 2</label>
+    <input id="exit-pass" type="password" autocomplete="off" required>
+    <p class="hint">Пароль нужен один раз: панель настроит вход по ключу и не сохранит его.</p>
+    <p id="exit-error" class="error" role="alert" hidden></p>
+    <button class="primary wide" type="submit">Подключить сервер 2</button>
+  </form>
+
+  <div id="setup-run" class="card setup-box" hidden>
+    <span class="logo big"><svg><use href="#i-mark"/></svg></span>
+    <h1 id="run-title">Настраиваю каскад</h1>
+    <p id="run-text" class="setup-text">Обычно это занимает до 10 минут. Страницу можно закрыть: установка продолжится.</p>
+    <ol id="run-steps" class="run-steps"></ol>
+    <pre id="run-log" class="run-log" tabindex="0" hidden></pre>
+    <button id="run-done" class="primary wide" type="button" hidden>Открыть панель</button>
+  </div>
+</section>
+
+<section id="login" class="login" hidden>
+  <form id="login-form" class="card login-box">
+    <span class="logo big"><svg><use href="#i-mark"/></svg></span>
+    <h1>Каскад</h1>
+    <div id="login-user-box" hidden>
+      <label for="login-user">Имя администратора</label>
+      <input id="login-user" autocomplete="username" autocapitalize="none" spellcheck="false">
+    </div>
+    <label for="login-pass">Пароль панели</label>
+    <input id="login-pass" type="password" autocomplete="current-password" required>
+    <p id="login-error" class="error" role="alert" hidden></p>
+    <button class="primary wide" type="submit">Войти</button>
+  </form>
+</section>
+
+<div id="app" class="shell" hidden>
+  <aside class="side">
+    <div class="side-brand"><span class="logo"><svg><use href="#i-mark"/></svg></span><strong>Каскад</strong></div>
+    <nav aria-label="Разделы">
+      <button class="tab" data-page="traffic" type="button"><svg><use href="#i-chart"/></svg><span>Трафик</span></button>
+      <button class="tab" data-page="users" type="button"><svg><use href="#i-users"/></svg><span>Пользователи</span></button>
+      <button class="tab" data-page="youtube" type="button"><svg><use href="#i-play"/></svg><span>YouTube</span></button>
+      <button class="tab" data-page="servers" type="button"><svg><use href="#i-server"/></svg><span>Серверы</span></button>
+    </nav>
+    <div class="side-foot">
+      <p id="side-version" class="dim"></p>
+      <button id="logout" class="tab" type="button"><svg><use href="#i-logout"/></svg><span>Выйти</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <header class="mobile-top">
+      <div class="side-brand"><span class="logo"><svg><use href="#i-mark"/></svg></span><strong>Каскад</strong></div>
+      <button id="logout-m" class="ghost" type="button">Выйти</button>
+    </header>
+
+    <!-- Трафик -->
+    <section id="page-traffic" class="page" hidden>
+      <h1>Трафик</h1>
+      <div class="card route" aria-label="Схема маршрута">
+        <svg class="route-wide" viewBox="0 0 1080 290" role="img" aria-label="Устройства, сервер 1, сервер 2, интернет и российские сайты">
+          <path class="wire" d="M194 84H310"/><path class="flow f-dev" data-flow="dev" d="M194 84H310"/>
+          <path class="wire" d="M480 84H596"/><path class="flow f-via" data-flow="via" d="M480 84H596"/>
+          <path class="wire" d="M766 84H882"/><path class="flow f-via" data-flow="s2" d="M766 84H882"/>
+          <path class="wire" d="M395 126V186L441 232H596"/><path class="flow f-dir" data-flow="direct" d="M395 126V186L441 232H596"/>
+          <g class="node"><rect x="24" y="42" width="170" height="84" rx="16"/><circle class="b-dev" cx="62" cy="84" r="21"/><svg x="50" y="72" width="24" height="24"><use href="#i-phone"/></svg><text class="name" x="92" y="79">Устройства</text><text class="sub" x="92" y="100" data-v="online"></text></g>
+          <g class="node"><rect x="310" y="42" width="170" height="84" rx="16"/><circle class="b-dev" cx="348" cy="84" r="21"/><svg x="336" y="72" width="24" height="24"><use href="#i-server"/></svg><text class="name" x="378" y="79">Сервер 1</text><text class="sub" x="378" y="100">Россия</text></g>
+          <g class="node"><rect x="596" y="42" width="170" height="84" rx="16"/><circle class="b-via" cx="634" cy="84" r="21"/><svg x="622" y="72" width="24" height="24"><use href="#i-server"/></svg><text class="name" x="664" y="79">Сервер 2</text><text class="sub" x="664" y="100" data-v="s2state"></text></g>
+          <g class="node"><rect x="882" y="42" width="174" height="84" rx="16"/><circle class="b-via" cx="920" cy="84" r="21"/><svg x="908" y="72" width="24" height="24"><use href="#i-globe"/></svg><text class="name" x="950" y="89">Интернет</text></g>
+          <g class="node"><rect x="596" y="190" width="240" height="84" rx="16"/><circle class="b-dir" cx="634" cy="232" r="21"/><svg x="622" y="220" width="24" height="24"><use href="#i-flag"/></svg><text class="name" x="664" y="227">Напрямую</text><text class="sub" x="664" y="248" data-v="direct-name"></text></g>
+          <g class="pill"><rect y="71" height="26" rx="13"/><text x="252" y="89" data-v="dev"></text></g>
+          <g class="pill"><rect y="71" height="26" rx="13"/><text x="538" y="89" data-v="via"></text></g>
+          <g class="pill"><rect y="71" height="26" rx="13"/><text x="824" y="89" data-v="s2"></text></g>
+          <g class="pill"><rect y="219" height="26" rx="13"/><text x="510" y="237" data-v="direct"></text></g>
+        </svg>
+        <svg class="route-tall" viewBox="0 0 360 440" role="img" aria-label="Устройства, сервер 1, сервер 2, интернет и российские сайты">
+          <path class="wire" d="M96 80V128"/><path class="flow f-dev" data-flow="dev" d="M96 80V128"/>
+          <path class="wire" d="M96 196V244"/><path class="flow f-via" data-flow="via" d="M96 196V244"/>
+          <path class="wire" d="M96 312V360"/><path class="flow f-via" data-flow="s2" d="M96 312V360"/>
+          <path class="wire" d="M176 162H250L280 192V244"/><path class="flow f-dir" data-flow="direct" d="M176 162H250L280 192V244"/>
+          <g class="node"><rect x="16" y="12" width="160" height="68" rx="14"/><circle class="b-dev" cx="46" cy="46" r="18"/><svg x="35" y="35" width="22" height="22"><use href="#i-phone"/></svg><text class="name" x="72" y="42">Устройства</text><text class="sub" x="72" y="62" data-v="online"></text></g>
+          <g class="node"><rect x="16" y="128" width="160" height="68" rx="14"/><circle class="b-dev" cx="46" cy="162" r="18"/><svg x="35" y="151" width="22" height="22"><use href="#i-server"/></svg><text class="name" x="72" y="158">Сервер 1</text><text class="sub" x="72" y="178">Россия</text></g>
+          <g class="node"><rect x="16" y="244" width="160" height="68" rx="14"/><circle class="b-via" cx="46" cy="278" r="18"/><svg x="35" y="267" width="22" height="22"><use href="#i-server"/></svg><text class="name" x="72" y="274">Сервер 2</text><text class="sub" x="72" y="294" data-v="s2state"></text></g>
+          <g class="node"><rect x="16" y="360" width="160" height="68" rx="14"/><circle class="b-via" cx="46" cy="394" r="18"/><svg x="35" y="383" width="22" height="22"><use href="#i-globe"/></svg><text class="name" x="72" y="399">Интернет</text></g>
+          <g class="node"><rect x="196" y="244" width="150" height="68" rx="14"/><text class="name" x="212" y="274">Напрямую</text><text class="sub" x="212" y="294" data-v="direct-short"></text></g>
+          <g class="pill"><rect y="91" height="26" rx="13"/><text x="96" y="109" data-v="dev"></text></g>
+          <g class="pill"><rect y="207" height="26" rx="13"/><text x="96" y="225" data-v="via"></text></g>
+          <g class="pill"><rect y="323" height="26" rx="13"/><text x="96" y="341" data-v="s2"></text></g>
+          <g class="pill"><rect y="197" height="26" rx="13"/><text x="280" y="215" data-v="direct"></text></g>
+        </svg>
+      </div>
+
+      <div class="tiles" id="tiles"></div>
+
+      <div class="pills" role="group" aria-label="Период графиков">
+        <button type="button" data-range="10m">10 минут</button>
+        <button type="button" data-range="24h">24 часа</button>
+        <button type="button" data-range="7d">7 дней</button>
+        <button type="button" data-range="30d">30 дней</button>
+      </div>
+
+      <div class="grid">
+        <section class="card col-6"><h2>Сервер 1</h2><p class="hint">Скорость на внешнем интерфейсе</p><div class="chart" id="chart-s1"></div></section>
+        <section class="card col-6"><h2>Сервер 2</h2><p class="hint">Скорость на внешнем интерфейсе</p><div class="chart" id="chart-s2"></div></section>
+        <section class="card col-12"><h2>Куда идёт трафик устройств</h2><div class="chart" id="chart-split"></div></section>
+
+        <section class="card col-7">
+          <div class="card-head"><div><h2>Трафик устройств по дням</h2><p class="hint">Последние 30 дней</p></div><button class="ghost" type="button" data-table="daily-table">Таблица</button></div>
+          <div id="chart-daily"></div>
+          <div class="scroll" id="daily-table" hidden><table id="daily-rows"></table></div>
+        </section>
+        <section class="card col-5">
+          <div class="card-head"><div><h2>Этот месяц</h2><p class="hint">Весь трафик серверов и устройств</p></div><button class="ghost" type="button" data-table="totals-table">Таблица</button></div>
+          <div id="month-bars"></div>
+          <div class="scroll" id="totals-table" hidden><table id="totals"></table></div>
+        </section>
+        <section class="card col-12">
+          <div class="card-head"><div><h2>Пользователи за месяц</h2></div><button class="ghost" type="button" data-table="users-table">Таблица</button></div>
+          <div id="user-bars"></div>
+          <div class="scroll" id="users-table" hidden><table id="user-totals"></table></div>
+        </section>
+      </div>
+      <p class="note">Счётчики серверов учитывают весь внешний трафик, включая служебные данные туннелей. Сутки и месяцы считаются по московскому времени.</p>
+    </section>
+
+    <!-- Пользователи -->
+    <section id="page-users" class="page" hidden>
+      <h1>Пользователи</h1>
+      <form id="add-form" class="card add">
+        <label for="add-name">Новый пользователь</label>
+        <div class="add-row">
+          <input id="add-name" maxlength="32" autocomplete="off" spellcheck="false" placeholder="например, ivan-phone" required>
+          <button class="primary" type="submit">Создать</button>
+        </div>
+        <p id="add-error" class="error" role="alert" hidden></p>
+      </form>
+      <div id="users-list"></div>
+    </section>
+
+    <!-- YouTube -->
+    <section id="page-youtube" class="page" hidden>
+      <h1>YouTube</h1>
+      <p class="lead">Выбери вариант и проверь длинное видео на устройстве. Если тормозит, переключи на следующий.</p>
+      <p id="yt-error" class="error" role="alert" hidden></p>
+      <div class="card opts" id="yt-base"></div>
+      <h2 class="section">Способы обхода на сервере 1</h2>
+      <div id="yt-presets"></div>
+    </section>
+
+    <!-- Серверы -->
+    <section id="page-servers" class="page" hidden>
+      <h1>Серверы</h1>
+      <div class="grid">
+        <section class="card col-6" id="host-1"></section>
+        <section class="card col-6" id="host-2"></section>
+        <section class="card col-6">
+          <h2>Связь между серверами</h2>
+          <p id="uplink-state"></p>
+          <div class="buttons">
+            <button id="btn-check" type="button">Проверить каскад</button>
+            <button id="btn-reconnect" type="button">Переподключить сервер 2</button>
+          </div>
+          <ul id="check-result" class="checks" hidden></ul>
+        </section>
+        <section class="card col-6">
+          <h2>Пароль панели</h2>
+          <form id="pass-form" class="pass">
+            <label for="pass-old">Текущий пароль</label>
+            <input id="pass-old" type="password" autocomplete="current-password" required>
+            <label for="pass-new">Новый пароль, от 10 символов</label>
+            <input id="pass-new" type="password" autocomplete="new-password" minlength="10" required>
+            <p id="pass-error" class="error" role="alert" hidden></p>
+            <button class="primary" type="submit">Сменить пароль</button>
+          </form>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="qr-dialog">
+  <h2 id="qr-title"></h2>
+  <img id="qr-img" alt="QR-код настроек">
+  <p class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
+  <div class="buttons">
+    <a id="qr-file" class="button" download>Скачать файл</a>
+    <button id="qr-close" type="button">Закрыть</button>
+  </div>
+</dialog>
+
+<dialog id="confirm-dialog">
+  <h2 id="confirm-title"></h2>
+  <p id="confirm-text"></p>
+  <div class="buttons">
+    <button id="confirm-yes" class="danger" type="button"></button>
+    <button id="confirm-no" type="button">Отмена</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<div id="tip" class="tip" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

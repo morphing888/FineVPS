@@ -1,0 +1,18 @@
+Сторонние материалы в этом проекте
+
+1. Схема разделения трафика и генерация параметров маскировки AmneziaWG основаны на проекте
+   https://github.com/bivlked/amneziawg-installer
+
+   MIT License
+   Copyright (c) 2025-2026 Ivan Bondarev
+
+   Текст лицензии MIT совпадает с файлом LICENSE, а уведомление об авторских правах
+   выше относится к заимствованным частям.
+
+2. Шрифт Inter в каталоге panel/web/fonts.
+   Copyright 2016 The Inter Project Authors. Лицензия SIL OFL 1.1, см. panel/web/fonts/OFL.txt.
+
+3. Публичный ключ репозитория Amnezia в packaging/amnezia-ppa.key
+   нужен для проверки пакетов AmneziaWG и является открытой информацией.
+
+zapret2, tpws, ByeDPI и wgcf в проект не входят: программа скачивает их с GitHub.
