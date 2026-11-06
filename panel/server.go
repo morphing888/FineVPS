@@ -203,6 +203,12 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /youtube/mode", a.auth(a.youtubeMode))
 	api.HandleFunc("POST /youtube/preset", a.auth(a.youtubePreset))
 	api.HandleFunc("POST /youtube/mark", a.auth(a.youtubeMark))
+	api.HandleFunc("GET /routes", a.auth(a.routes))
+	api.HandleFunc("POST /routes/service", a.auth(a.routeService))
+	api.HandleFunc("POST /routes/rule", a.auth(a.routeAdd))
+	api.HandleFunc("POST /routes/rule/delete", a.auth(a.routeDel))
+	api.HandleFunc("POST /routes/update", a.auth(a.routeUpdate))
+	api.HandleFunc("POST /routes/check", a.auth(a.routeCheck))
 
 	apiPrefix := a.cfg.Base + "/api"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

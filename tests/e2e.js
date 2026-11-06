@@ -208,6 +208,62 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await opt("Через сервер 2").getByText("Сейчас включено").waitFor({ timeout: 15000 });
   });
 
+  await pg.click('.tab[data-page="routes"]');
+  const svc = n => pg.locator(".route-row", { hasText: n });
+  await t("маршруты: каталог сервисов", async () => {
+    await pg.waitForSelector(".route-row");
+    assert.strictEqual(await pg.locator(".route-row").count(), 8);
+    assert.strictEqual(await svc("Steam").getByRole("button", { name: "Как обычно" }).getAttribute("aria-pressed"), "true");
+    assert.match(await svc("Steam").locator(".route-meta").textContent(), /загрузятся/);
+  });
+  await t("маршруты: Steam через сервер 1, списки загружены", async () => {
+    await svc("Steam").getByRole("button", { name: "Сервер 1" }).click();
+    await pg.waitForFunction(() => [...document.querySelectorAll(".route-row")].some(r => /Steam/.test(r.textContent) && r.querySelector('[aria-pressed="true"]').textContent === "Сервер 1"), null, { timeout: 30000 });
+    assert.match(await svc("Steam").locator(".route-meta").textContent(), /1 сеть · \d+ домен.* · обновлено/);
+  });
+  await t("маршруты: ошибка источника видна", async () => {
+    await svc("Telegram").getByRole("button", { name: "Сервер 2" }).click();
+    await pg.waitForFunction(() => /источник не ответил/.test([...document.querySelectorAll(".route-row")].find(r => /Telegram/.test(r.textContent)).textContent), null, { timeout: 30000 });
+  });
+  await t("маршруты: своё правило добавляется", async () => {
+    await pg.fill("#rule-value", "https://Example.org/page");
+    await pg.click('[data-rule-target="2"]');
+    await pg.click("#rule-form button[type=submit]");
+    await pg.locator(".rule", { hasText: "example.org" }).waitFor({ timeout: 20000 });
+    assert.strictEqual(await pg.inputValue("#rule-value"), "");
+    assert.match(await pg.locator(".rule", { hasText: "example.org" }).textContent(), /Сервер 2/);
+  });
+  await t("маршруты: неверный адрес — понятная ошибка", async () => {
+    await pg.fill("#rule-value", "1.2.3.0/4");
+    await pg.click("#rule-form button[type=submit]");
+    await pg.waitForSelector("#rule-error:not([hidden])");
+    assert.match(await pg.textContent("#rule-error"), /не шире/);
+    await pg.fill("#rule-value", "");
+  });
+  await t("маршруты: проверка адреса объясняет причину", async () => {
+    await pg.fill("#route-check-host", "203.0.113.5");
+    await pg.click("#route-check-form button");
+    await pg.locator("#route-check li").first().waitFor({ timeout: 15000 });
+    const txt = await pg.textContent("#route-check");
+    assert.ok(/203\.0\.113\.5/.test(txt) && /Сервер 1/.test(txt) && /Steam/.test(txt), txt);
+  });
+  if (SHOTS) { await pg.mouse.move(2, 2); await pg.screenshot({ path: SHOTS + "/routes.png", fullPage: true }); }
+  await t("маршруты: удаление правила с отменой", async () => {
+    await pg.locator(".rule", { hasText: "example.org" }).getByRole("button", { name: "Удалить" }).click();
+    await pg.locator("#toast").getByRole("button", { name: "Отменить" }).click({ timeout: 20000 });
+    await pg.locator(".rule", { hasText: "example.org" }).waitFor({ timeout: 20000 });
+    await pg.locator(".rule", { hasText: "example.org" }).getByRole("button", { name: "Удалить" }).click();
+    await pg.waitForFunction(() => !/example\.org/.test(document.getElementById("rules").textContent), null, { timeout: 20000 });
+  });
+  await t("маршруты: возврат «как обычно» сохраняется", async () => {
+    await svc("Telegram").getByRole("button", { name: "Как обычно" }).click();
+    await pg.waitForFunction(() => [...document.querySelectorAll(".route-row")].find(r => /Telegram/.test(r.textContent)).querySelector('[aria-pressed="true"]').textContent === "Как обычно", null, { timeout: 20000 });
+    await pg.reload();
+    await svc("Steam").waitFor();
+    assert.strictEqual(await svc("Steam").getByRole("button", { name: "Сервер 1" }).getAttribute("aria-pressed"), "true");
+    assert.strictEqual(await svc("Telegram").getByRole("button", { name: "Как обычно" }).getAttribute("aria-pressed"), "true");
+  });
+
   await pg.click('.tab[data-page="servers"]');
   await t("видны оба сервера", async () => {
     await pg.waitForFunction(() => /Память/.test(document.getElementById("host-2").textContent));
@@ -290,8 +346,30 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await fits(ph);
     if (SHOTS) await ph.screenshot({ path: SHOTS + "/phone-youtube.png", fullPage: true });
   });
+  await t("телефон: маршруты без горизонтальной прокрутки", async () => {
+    await ph.click('.tab[data-page="routes"]');
+    await ph.waitForSelector(".route-row");
+    await fits(ph);
+    const rows = await ph.$$eval(".side nav .tab", ts => new Set(ts.filter(x => x.offsetParent).map(x => Math.round(x.getBoundingClientRect().top))).size);
+    assert.strictEqual(rows, 1, "вкладки в несколько рядов");
+    const tall = await ph.$$eval(".route-row .pills button", bs => bs.filter(b => b.getBoundingClientRect().height > 44).length);
+    assert.strictEqual(tall, 0, "подписи кнопок переносятся");
+    if (SHOTS) await ph.screenshot({ path: SHOTS + "/phone-routes.png" });
+  });
+  await t("телефон: «Ещё» открывает лист с разделами", async () => {
+    assert.ok(await ph.isHidden('.side nav .tab[data-page="servers"]'));
+    await ph.click("#more-tab");
+    await ph.waitForSelector("#more-sheet:not([hidden])");
+    if (SHOTS) await ph.screenshot({ path: SHOTS + "/phone-more.png" });
+    await ph.mouse.click(195, 100);
+    await ph.waitForSelector("#more-sheet", { state: "hidden" });
+    await ph.click("#more-tab");
+    await ph.click('[data-go="servers"]');
+    await ph.waitForSelector("#page-servers:not([hidden])");
+    assert.ok(await ph.isHidden("#more-sheet"));
+    assert.strictEqual(await ph.getAttribute("#more-tab", "aria-current"), "page");
+  });
   await t("телефон: серверы без горизонтальной прокрутки", async () => {
-    await ph.click('.tab[data-page="servers"]');
     await ph.waitForFunction(() => /Сервер 2/.test(document.getElementById("host-2").textContent));
     await sleep(300);
     await fits(ph);

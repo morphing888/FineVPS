@@ -13,7 +13,7 @@
 set -euo pipefail
 umask 077
 
-VERSION="0.7.0"
+VERSION="0.8.0"
 SELF="$(readlink -f "$0")"
 BIN="/usr/local/sbin/awg-cascade"
 PANEL_BIN="/usr/local/sbin/awg-cascade-panel"
@@ -59,6 +59,9 @@ REPO="morphing888/FineVPS"
 RELEASE_BASE="${AWGC_RELEASE_BASE:-https://github.com/$REPO/releases/download}"
 RELEASE_API="${AWGC_RELEASE_API:-https://api.github.com/repos/$REPO/releases/latest}"
 YT_DEFAULT="${AWGC_YT_DEFAULT:-t2}"
+ROUTES_DIR="$STATE/routes"
+RIPE_URL="${AWGC_RIPE_URL:-https://stat.ripe.net/data/announced-prefixes/data.json?resource=@ASN@}"
+V2FLY_URL="${AWGC_V2FLY_URL:-https://raw.githubusercontent.com/v2fly/domain-list-community/master/data}"
 IF_WARP="awgwarp"
 WARP_TABLE=8702
 WARP_MARK="0x200000"
@@ -76,7 +79,7 @@ KEYS="$STATE/keys"
 
 EXIT_IP="" EXIT_SSH_PORT="22" EXIT_PORT="" ENTRY_IP="" ENTRY_PORT="" SAVED_RP_ALL=""
 PANEL_PORT="" PANEL_PATH="" YOUTUBE_MODE="exit" YOUTUBE_PRESET=""
-YT_ON=0 YT_PROXY=0 YT_WARP=0
+YT_ON=0 YT_PROXY=0 YT_WARP=0 DNS_ON=0
 AGENT_PORT=8711
 SSH_DIR="" SSH_OPTS=() SSH_SECRET=""
 
@@ -496,7 +499,7 @@ apply_firewall() {
     if [[ -n $PANEL_PORT ]]; then
         "${IPT[@]}" -A AWGC_INPUT -p tcp --dport "$PANEL_PORT" -j ACCEPT
     fi
-    if (( YT_ON )); then
+    if (( DNS_ON )); then
         "${IPT[@]}" -A AWGC_INPUT -i "$IF_CLIENTS" -p udp --dport 53 -j ACCEPT
         "${IPT[@]}" -A AWGC_INPUT -i "$IF_CLIENTS" -p tcp --dport 53 -j ACCEPT
     fi
@@ -505,9 +508,12 @@ apply_firewall() {
     fi
 
     own_chain filter AWGC_FORWARD FORWARD
-    if (( YT_ON )); then
-        # Закрытый DNS не должен обходить наш сервер имён, а QUIC заменяем на TCP.
+    if (( DNS_ON )); then
+        # Закрытый DNS не должен обходить наш сервер имён.
         "${IPT[@]}" -A AWGC_FORWARD -i "$IF_CLIENTS" -p tcp --dport 853 -j REJECT
+    fi
+    if (( YT_ON )); then
+        # QUIC к YouTube заменяем на TCP: обходы работают с TCP.
         "${IPT[@]}" -A AWGC_FORWARD -i "$IF_CLIENTS" -p udp --dport 443 -m set --match-set "$YT_SET" dst -j REJECT
     fi
     for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
@@ -518,14 +524,19 @@ apply_firewall() {
 
     own_chain mangle AWGC_PRE PREROUTING
     "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m addrtype --dst-type LOCAL -j RETURN
-    if (( YT_ON )); then
+    if (( DNS_ON )); then
         "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -p udp --dport 53 -j RETURN
         "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -p tcp --dport 53 -j RETURN
+    fi
+    if (( YT_ON )); then
         if (( YT_WARP )); then
             "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m set --match-set "$YT_SET" dst -j MARK --set-xmark "$WARP_MARK/$WARP_MARK"
         fi
         "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m set --match-set "$YT_SET" dst -j RETURN
+    elif (( DNS_ON )); then
+        route_jump "$YT_SET" 2 # YouTube через сервер 2, даже если сервис Google идёт через сервер 1
     fi
+    routes_rules
     "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m set --match-set "$RU_SET" dst -j RETURN
     "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -j MARK --set-xmark "$MARK/$MARK"
 
@@ -538,7 +549,7 @@ apply_firewall() {
     "${IPT[@]}" -t nat -A AWGC_NAT -s "$CLIENT_NET" ! -o "$IF_CLIENTS" -j MASQUERADE
 
     own_chain nat AWGC_DNS PREROUTING
-    if (( YT_ON )); then
+    if (( DNS_ON )); then
         "${IPT[@]}" -t nat -A AWGC_DNS -i "$IF_CLIENTS" -p udp --dport 53 -j DNAT --to-destination "$CLIENT_GW:53"
         "${IPT[@]}" -t nat -A AWGC_DNS -i "$IF_CLIENTS" -p tcp --dport 53 -j DNAT --to-destination "$CLIENT_GW:53"
     fi
@@ -583,10 +594,12 @@ routing_lock() {
 
 apply_all() {
     sysctl -q -w net.ipv4.ip_forward=1
-    YT_ON=0 YT_PROXY=0 YT_WARP=0
+    YT_ON=0 YT_PROXY=0 YT_WARP=0 DNS_ON=0
     ipset create "$YT_SET" hash:ip timeout 21600 -exist
+    routes_sets
+    if dns_running; then DNS_ON=1; fi
     if [[ $YOUTUBE_MODE != exit ]]; then
-        if dns_running; then
+        if (( DNS_ON )); then
             YT_ON=1
         else
             warn "сервер имён не запущен: YouTube пока идёт через сервер 2"
@@ -620,6 +633,10 @@ cmd_routing() {
         warn "списка российских сетей нет: пока весь трафик идёт через сервер 2"
     else
         warn "оставляю прежний список российских сетей"
+    fi
+    if routes_refresh stale; then
+        dns_sync
+        apply_all
     fi
     say "Маршруты применены: российских сетей $(ru_count), таблица $ROUTE_TABLE"
 }
@@ -1013,11 +1030,14 @@ dns_conf() {
     printf 'ipset='
     for d in $YT_DOMAINS; do printf '/%s' "$d"; done
     printf '/%s\n' "$YT_SET"
+    routes_dns_conf
 }
 
 dns_running() {
     if [[ $NO_SYSTEMD == 1 ]]; then
-        [[ -s $YT_DIR/dnsmasq.pid ]] && kill -0 "$(cat "$YT_DIR/dnsmasq.pid")" 2>/dev/null
+        local st
+        st=$(ps -o stat= -p "$(cat "$YT_DIR/dnsmasq.pid" 2>/dev/null || echo 0)" 2>/dev/null || true)
+        [[ -n $st && $st != Z* ]]
     else
         systemctl is-active --quiet awg-cascade-dns.service
     fi
@@ -1075,7 +1095,7 @@ apply_dns_rules() {
     for s in $DNS_TUNNELED; do
         for p in udp tcp; do
             ip rule del to "$s/32" ipproto "$p" dport 53 table "$ROUTE_TABLE" 2>/dev/null || true
-            if (( YT_ON )); then
+            if (( DNS_ON )); then
                 ip rule add to "$s/32" ipproto "$p" dport 53 table "$ROUTE_TABLE" priority "$RULE_PRIO"
             fi
         done
@@ -1181,8 +1201,12 @@ apply_nfq_rules() {
 
 install_yt_deps() {
     [[ $SKIP_PACKAGES == 1 ]] && return 0
-    if command -v dnsmasq >/dev/null && command -v nft >/dev/null; then return 0; fi
-    apt_get install dnsmasq-base nftables >/dev/null || die "не удалось поставить dnsmasq-base и nftables"
+    if ! command -v dnsmasq >/dev/null || ! command -v nft >/dev/null; then
+        apt_get install dnsmasq-base nftables >/dev/null || die "не удалось поставить dnsmasq-base и nftables"
+    fi
+    if ! command -v dig >/dev/null; then
+        apt_get install bind9-dnsutils >/dev/null || warn "не удалось поставить dig: проверка адресов пойдёт мимо сервера имён каскада"
+    fi
 }
 
 engines_stop() {
@@ -1213,7 +1237,11 @@ yt_set_mode() {
     case $mode in
         exit)
             engines_stop
-            dns_stop
+            if routes_need_dns; then
+                dns_start || warn "сервер имён не запустился: маршруты по доменам пока не работают"
+            else
+                dns_stop
+            fi
             ;;
         direct)
             install_yt_deps
@@ -1849,6 +1877,365 @@ cmd_bootstrap() { # подготовка сервера 1 до подключе�
     fi
 }
 
+# ---------- маршруты сервисов ----------
+# Каталог: номер|название|описание|список v2fly|номера AS|основные домены.
+# Сети по номерам AS берутся из RIPEstat, домены из открытых списков v2fly/domain-list-community.
+# Номера AS указаны только там, где сеть принадлежит самому сервису: в сетях Google, Meta и Microsoft
+# много чужих сервисов, поэтому для них используются только домены.
+routes_catalog() {
+    cat <<'EOF'
+steam|Steam|Магазин, загрузки игр и сетевая игра|steam|AS32590|steampowered.com steamcommunity.com steamstatic.com steamcontent.com steamserver.net steamgames.com valvesoftware.com steam-chat.com steamusercontent.com
+google|Google|Поиск, почта, карты, магазин приложений. YouTube настраивается в своём разделе|google||google.com google.ru gstatic.com googleapis.com gmail.com googleusercontent.com android.com gvt1.com gvt2.com
+telegram|Telegram|Сообщения, звонки и файлы|telegram|AS62041 AS62014 AS59930 AS44907 AS211157|telegram.org t.me telegram.me telesco.pe tdesktop.com
+discord|Discord|Чаты и голосовые каналы|discord||discord.com discord.gg discordapp.com discordapp.net discord.media
+whatsapp|WhatsApp|Сообщения и звонки|whatsapp||whatsapp.com whatsapp.net wa.me
+microsoft|Microsoft и Xbox|Windows, Office, обновления и Xbox|microsoft||microsoft.com windows.com windowsupdate.com live.com xbox.com xboxlive.com office.com msftconnecttest.com
+epic|Epic Games|Магазин и загрузки игр|epicgames||epicgames.com epicgames.dev unrealengine.com fortnite.com
+twitch|Twitch|Трансляции|twitch|AS46489|twitch.tv ttvnw.net jtvnw.net twitchcdn.net
+EOF
+}
+
+svc_field() { routes_catalog | awk -F'|' -v id="$1" -v n="$2" '$1 == id {print $n}'; }
+
+route_target() { # при set -e awk без файла остановил бы программу
+    [[ -s $ROUTES_DIR/choice ]] || return 0
+    awk -v id="$1" '$1 == id {t = $2} END {print t}' "$ROUTES_DIR/choice"
+}
+
+routes_files() { mkdir -p "$ROUTES_DIR"; chmod 700 "$ROUTES_DIR"; touch "$ROUTES_DIR/choice" "$ROUTES_DIR/custom"; }
+
+chosen_services() { # номер и сервер выбранных сервисов, в порядке каталога
+    local id t
+    while IFS='|' read -r id _; do
+        t=$(route_target "$id")
+        if [[ -n $t ]]; then printf '%s %s\n' "$id" "$t"; fi
+    done < <(routes_catalog)
+}
+
+is_net() { [[ $1 =~ ^[0-9./]+$ ]]; }
+
+valid_net() {
+    local m=32
+    if [[ $1 == */* ]]; then m=${1#*/}; fi
+    valid_ipv4 "${1%/*}" && [[ $m =~ ^[0-9]{1,2}$ ]] && (( 10#$m >= 8 && 10#$m <= 32 ))
+}
+
+valid_domain() {
+    (( ${#1} <= 253 )) && [[ $1 =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$ ]]
+}
+
+route_norm() { # приводит ввод человека к адресу: без схемы, пути и порта
+    local v=${1,,}
+    v=${v#*://}
+    v=${v#\*.}
+    if ! is_net "$v"; then v=${v%%/*}; v=${v%%:*}; v=${v%.}; fi
+    printf '%s' "$v"
+}
+
+routes_need_dns() {
+    [[ -n $(chosen_services) ]] && return 0
+    [[ -s $ROUTES_DIR/custom ]] && awk '$2 !~ /^[0-9.\/]+$/ {f = 1} END {exit !f}' "$ROUTES_DIR/custom"
+}
+
+dns_sync() { # сервер имён нужен YouTube и маршрутам по доменам
+    if [[ $YOUTUBE_MODE != exit ]] || routes_need_dns; then
+        install_yt_deps
+        dns_start || warn "сервер имён не запустился: маршруты по доменам пока не работают"
+    else
+        dns_stop
+    fi
+}
+
+route_jump() { # набор, сервер
+    if [[ $2 == 2 ]]; then
+        "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m set --match-set "$1" dst -j MARK --set-xmark "$MARK/$MARK"
+    fi
+    "${IPT[@]}" -t mangle -A AWGC_PRE -i "$IF_CLIENTS" -m set --match-set "$1" dst -j RETURN
+}
+
+# Порядок: свои правила, затем сервисы. При пересечении побеждает сервер 2:
+# заблокированное в России через сервер 1 не откроется.
+routes_rules() {
+    local t id tt
+    for t in 2 1; do
+        route_jump "awgc_c${t}n" "$t"
+        if (( DNS_ON )); then route_jump "awgc_c${t}d" "$t"; fi
+    done
+    for t in 2 1; do
+        while read -r id tt; do
+            [[ $tt == "$t" ]] || continue
+            route_jump "awgc_s_${id}n" "$t"
+            if (( DNS_ON )); then route_jump "awgc_s_${id}d" "$t"; fi
+        done < <(chosen_services)
+    done
+}
+
+load_net_set() { # набор, файл со списком сетей или пусто
+    {
+        printf 'create awgc_tmp hash:net\nflush awgc_tmp\n'
+        if [[ -n $2 && -s $2 ]]; then awk '{print "add awgc_tmp " $1}' "$2"; fi
+    } | ipset -exist restore
+    ipset swap awgc_tmp "$1"
+    ipset destroy awgc_tmp
+}
+
+routes_sets() {
+    local t id f
+    routes_files
+    for t in 1 2; do
+        ipset create "awgc_c${t}n" hash:net -exist
+        ipset create "awgc_c${t}d" hash:ip timeout 21600 -exist
+        awk -v t="$t" '$1 == t && $2 ~ /^[0-9.\/]+$/ {print $2}' "$ROUTES_DIR/custom" >"$ROUTES_DIR/c$t.nets"
+        load_net_set "awgc_c${t}n" "$ROUTES_DIR/c$t.nets"
+    done
+    while IFS='|' read -r id _; do
+        ipset create "awgc_s_${id}n" hash:net -exist
+        ipset create "awgc_s_${id}d" hash:ip timeout 21600 -exist
+        f=""
+        if [[ -n $(route_target "$id") ]]; then f="$ROUTES_DIR/cache/$id.nets"; fi
+        load_net_set "awgc_s_${id}n" "$f"
+    done < <(routes_catalog)
+}
+
+routes_dns_conf() {
+    local id t
+    while read -r id t; do
+        if [[ -s $ROUTES_DIR/cache/$id.domains ]]; then
+            awk -v s="awgc_s_${id}d" '{print "ipset=/" $1 "/" s}' "$ROUTES_DIR/cache/$id.domains"
+        fi
+    done < <(chosen_services)
+    if [[ -s $ROUTES_DIR/custom ]]; then
+        awk '$2 !~ /^[0-9.\/]+$/ {print "ipset=/" $2 "/awgc_c" $1 "d"}' "$ROUTES_DIR/custom"
+    fi
+}
+
+v2fly_domains() { # список, глубина вложенности
+    (( $2 > 3 )) && return 0
+    local body line
+    body=$(curl -fsSL --retry 2 --max-time 30 "$V2FLY_URL/$1" 2>/dev/null) || return 1
+    while read -r line _; do
+        case $line in
+            ''|\#*|regexp:*|keyword:*) ;;
+            include:*) v2fly_domains "${line#include:}" $(( $2 + 1 )) || true ;;
+            full:*)    printf '%s\n' "${line#full:}" ;;
+            domain:*)  printf '%s\n' "${line#domain:}" ;;
+            *:*) ;;
+            *)         printf '%s\n' "$line" ;;
+        esac
+    done <<<"$body"
+}
+
+svc_refresh() { # скачать списки сервиса. Если источник не ответил, остаётся прошлый список
+    local id=$1 dir="$ROUTES_DIR/cache" tmp="$ROUTES_DIR/tmp" asn body list asns fb failed=0
+    mkdir -p "$dir" "$tmp"
+    list=$(svc_field "$id" 4); asns=$(svc_field "$id" 5); fb=$(svc_field "$id" 6)
+    if [[ -n $asns ]]; then
+        : >"$tmp/nets"
+        for asn in $asns; do
+            if body=$(curl -fsSL --retry 2 --max-time 30 "${RIPE_URL//@ASN@/$asn}" 2>/dev/null); then
+                grep -oE '"prefix" *: *"[0-9.]+/[0-9]+"' <<<"$body" | grep -oE '[0-9.]+/[0-9]+' >>"$tmp/nets" || true
+            fi
+        done
+        awk -F'[./]' 'NF == 5 && $1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255 && $5 >= 8 && $5 <= 32' "$tmp/nets" | sort -u >"$tmp/nets.ok"
+        if [[ -s $tmp/nets.ok ]]; then mv "$tmp/nets.ok" "$dir/$id.nets"; else failed=1; fi
+    fi
+    if ! v2fly_domains "$list" 0 >"$tmp/dom"; then failed=1; : >"$tmp/dom"; fi
+    if [[ -s $tmp/dom || ! -s $dir/$id.domains ]]; then
+        printf '%s\n' $fb >>"$tmp/dom"
+        tr 'A-Z' 'a-z' <"$tmp/dom" \
+            | grep -E '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$' \
+            | awk -v yt="$YT_DOMAINS" 'BEGIN {n = split(yt, a, " ")}
+                {for (i = 1; i <= n; i++) if ($1 == a[i] || substr($1, length($1) - length(a[i])) == "." a[i]) next; print}' \
+            | sort -u | head -n 5000 >"$dir/$id.domains"
+    fi
+    date +%s >"$dir/$id.time"
+    if (( failed )); then
+        echo 1 >"$dir/$id.err"
+        warn "$(svc_field "$id" 2): источник списков не ответил, оставлен прежний список"
+    else
+        : >"$dir/$id.err"
+    fi
+    return 0
+}
+
+routes_refresh() { # all — все выбранные, stale — только устаревшие. Возвращает 0, если что-то обновилось
+    local id t f changed=1 now
+    now=$(date +%s)
+    while read -r id t; do
+        f="$ROUTES_DIR/cache/$id.time"
+        if [[ $1 == all || ! -s $f ]] || (( now - $(cat "$f") > 72000 )); then
+            svc_refresh "$id"
+            changed=0
+        fi
+    done < <(chosen_services)
+    return "$changed"
+}
+
+routes_apply() {
+    routing_lock
+    dns_sync
+    apply_all
+}
+
+target_name() { case $1 in 1) printf 'сервер 1' ;; 2) printf 'сервер 2' ;; *) printf 'как обычно' ;; esac; }
+
+route_set() {
+    local id=${1:-} t=${2:-}
+    [[ -n $id && -n $(svc_field "$id" 1) ]] || die "неизвестный сервис: $id"
+    [[ $t =~ ^(1|2|auto)$ ]] || die "укажи сервер: 1, 2 или auto"
+    if [[ $t != auto && ! -s $ROUTES_DIR/cache/$id.domains ]]; then svc_refresh "$id"; fi
+    { awk -v id="$id" '$1 != id' "$ROUTES_DIR/choice"; if [[ $t != auto ]]; then printf '%s %s\n' "$id" "$t"; fi; } >"$ROUTES_DIR/choice.tmp"
+    mv "$ROUTES_DIR/choice.tmp" "$ROUTES_DIR/choice"
+    ipset flush "awgc_s_${id}d" 2>/dev/null || true
+    routes_apply
+    ok "$(svc_field "$id" 2): $(target_name "$t")"
+}
+
+route_add() {
+    local v t=${2:-}
+    v=$(route_norm "${1:-}")
+    [[ $t =~ ^[12]$ ]] || die "укажи сервер: 1 или 2"
+    if is_net "$v"; then
+        valid_net "$v" || die "неверный адрес или подсеть: $v. Подсеть не шире /8"
+    else
+        valid_domain "$v" || die "неверный адрес сайта: $v"
+    fi
+    if [[ -s $ROUTES_DIR/custom ]] && (( $(wc -l <"$ROUTES_DIR/custom") >= 300 )); then die "правил уже 300, удали ненужные"; fi
+    { awk -v v="$v" '$2 != v' "$ROUTES_DIR/custom"; printf '%s %s\n' "$t" "$v"; } >"$ROUTES_DIR/custom.tmp"
+    mv "$ROUTES_DIR/custom.tmp" "$ROUTES_DIR/custom"
+    ipset flush awgc_c1d 2>/dev/null || true
+    ipset flush awgc_c2d 2>/dev/null || true
+    routes_apply
+    ok "$v: $(target_name "$t")"
+}
+
+route_del() {
+    local v
+    v=$(route_norm "${1:-}")
+    awk -v v="$v" '$2 == v {f = 1} END {exit !f}' "$ROUTES_DIR/custom" 2>/dev/null || die "такого правила нет: $v"
+    awk -v v="$v" '$2 != v' "$ROUTES_DIR/custom" >"$ROUTES_DIR/custom.tmp"
+    mv "$ROUTES_DIR/custom.tmp" "$ROUTES_DIR/custom"
+    ipset flush awgc_c1d 2>/dev/null || true
+    ipset flush awgc_c2d 2>/dev/null || true
+    routes_apply
+    ok "правило $v удалено"
+}
+
+in_set() { ipset test "$1" "$2" >/dev/null 2>&1; }
+
+route_why() { # повторяет порядок правил в apply_firewall
+    local ip=$1 dns=0 t id tt
+    if dns_running; then dns=1; fi
+    if (( dns )) && in_set "$YT_SET" "$ip"; then
+        if [[ $YOUTUBE_MODE == exit ]]; then printf '2|YouTube'; else printf '1|YouTube'; fi
+        return
+    fi
+    for t in 2 1; do
+        if in_set "awgc_c${t}n" "$ip" || { (( dns )) && in_set "awgc_c${t}d" "$ip"; }; then printf '%s|своё правило' "$t"; return; fi
+    done
+    for t in 2 1; do
+        while read -r id tt; do
+            [[ $tt == "$t" ]] || continue
+            if in_set "awgc_s_${id}n" "$ip" || { (( dns )) && in_set "awgc_s_${id}d" "$ip"; }; then
+                printf '%s|%s' "$t" "$(svc_field "$id" 2)"
+                return
+            fi
+        done < <(chosen_services)
+    done
+    if in_set "$RU_SET" "$ip"; then printf '1|российская сеть'; return; fi
+    printf '2|остальные адреса'
+}
+
+route_check() {
+    local host ip r first=1
+    local -a ips=()
+    host=$(route_norm "${1:-}")
+    if valid_ipv4 "$host"; then
+        ips=("$host")
+    else
+        valid_domain "$host" || die "неверный адрес: $host"
+        # Запрос через сервер имён каскада заодно заносит адрес в списки, как у устройства.
+        if dns_running && command -v dig >/dev/null; then
+            mapfile -t ips < <(dig +short +time=2 +tries=1 @"$CLIENT_GW" "$host" A 2>/dev/null | grep -E '^[0-9.]+$' || true)
+        else
+            mapfile -t ips < <(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u || true)
+        fi
+        (( ${#ips[@]} )) || die "не удалось узнать адрес $host"
+    fi
+    printf '{"host":"%s","results":[' "$host"
+    for ip in "${ips[@]:0:6}"; do
+        r=$(route_why "$ip")
+        if (( ! first )); then printf ','; fi
+        first=0
+        printf '{"ip":"%s","target":"%s","reason":"%s"}' "$ip" "${r%%|*}" "${r#*|}"
+    done
+    printf ']}\n'
+}
+
+route_json() {
+    local id name desc t f nets doms upd err first=1 dns=false
+    local dir="$ROUTES_DIR/cache"
+    printf '{"services":['
+    while IFS='|' read -r id name desc _; do
+        t=$(route_target "$id"); nets=0; doms=0; upd=0; err=false
+        if [[ -s $dir/$id.nets ]]; then nets=$(wc -l <"$dir/$id.nets"); fi
+        if [[ -s $dir/$id.domains ]]; then doms=$(wc -l <"$dir/$id.domains"); fi
+        if [[ -s $dir/$id.time ]]; then upd=$(cat "$dir/$id.time"); fi
+        if [[ -s $dir/$id.err ]]; then err=true; fi
+        if (( ! first )); then printf ','; fi
+        first=0
+        printf '{"id":"%s","name":"%s","desc":"%s","target":"%s","nets":%d,"domains":%d,"updated":%d,"error":%s}' \
+            "$id" "$name" "$desc" "${t:-auto}" "$nets" "$doms" "$upd" "$err"
+    done < <(routes_catalog)
+    printf '],"rules":['
+    first=1
+    if [[ -s $ROUTES_DIR/custom ]]; then
+        while read -r t f; do
+            if (( ! first )); then printf ','; fi
+            first=0
+            printf '{"value":"%s","target":"%s"}' "$f" "$t"
+        done <"$ROUTES_DIR/custom"
+    fi
+    if dns_running; then dns=true; fi
+    printf '],"dns":%s}\n' "$dns"
+}
+
+route_list() {
+    local id name t f
+    say "Сервисы:"
+    while IFS='|' read -r id name _; do
+        t=$(route_target "$id")
+        printf '  %-10s %-18s %s\n' "$id" "$name" "$(target_name "${t:-auto}")"
+    done < <(routes_catalog)
+    say "Свои правила:"
+    if [[ -s $ROUTES_DIR/custom ]]; then
+        while read -r t f; do printf '  %-32s %s\n' "$f" "$(target_name "$t")"; done <"$ROUTES_DIR/custom"
+    else
+        say "  нет"
+    fi
+}
+
+cmd_route() {
+    need_root; need_entry
+    local sub=${1:-list}
+    if (( $# )); then shift; fi
+    routes_files
+    case $sub in
+        list)   route_list ;;
+        json)   route_json ;;
+        set)    route_set "$@" ;;
+        add)    route_add "$@" ;;
+        del)    route_del "$@" ;;
+        check)  route_check "$@" ;;
+        update)
+            routes_refresh all || true
+            routes_apply
+            ok "списки сервисов обновлены"
+            ;;
+        *) die "неизвестная команда: route $sub" ;;
+    esac
+}
+
 panel_healthy() {
     if [[ $NO_SYSTEMD == 1 ]]; then "$PANEL_BIN" version >/dev/null 2>&1; return; fi
     local i
@@ -1939,7 +2326,7 @@ cmd_setup_link() {
 remove_entry() {
     engines_stop
     dns_stop
-    YT_ON=0
+    YT_ON=0 DNS_ON=0
     apply_dns_rules
     nft delete table inet awgc_yt 2>/dev/null || true
     rm -f "$UNIT_DIR/awg-cascade-dns.service" "$UNIT_DIR/awg-cascade-nfqws.service"
@@ -1975,6 +2362,8 @@ nat AWGC_DNS PREROUTING
 EOF
     ipset destroy "$RU_SET" 2>/dev/null || true
     ipset destroy "$YT_SET" 2>/dev/null || true
+    local set
+    for set in $(ipset list -n 2>/dev/null | grep -E '^awgc_(s_|c[12])'); do ipset destroy "$set" 2>/dev/null || true; done
     if [[ -n $SAVED_RP_ALL ]]; then
         sysctl -q -w "net.ipv4.conf.all.rp_filter=$SAVED_RP_ALL" 2>/dev/null || true
     fi
@@ -2031,6 +2420,12 @@ awg-cascade $VERSION: каскад AmneziaWG на двух серверах
   panel-install [ФАЙЛ]    установить или обновить панель
   panel-password          создать новый пароль панели
   update [vX.Y.Z]         обновить программу с GitHub, при сбое вернуть прежнюю версию
+  route list|json         маршруты сервисов и свои правила
+  route set ID 1|2|auto   направить сервис через сервер 1, сервер 2 или как обычно
+  route add АДРЕС 1|2     своё правило для сайта, IP-адреса или подсети
+  route del АДРЕС         удалить своё правило
+  route update            обновить списки сетей и доменов сервисов
+  route check АДРЕС       узнать, через какой сервер идёт адрес
   agent-install           поставить сбор статистики на сервер 2
   uninstall --yes         удалить каскад с этого сервера
 EOF
@@ -2057,6 +2452,7 @@ main() {
         panel-install)  cmd_panel_install "$@" ;;
         panel-password) cmd_panel_password ;;
         update)     cmd_update "$@" ;;
+        route)      cmd_route "$@" ;;
         agent-install)  cmd_agent_install ;;
         setup-agent)    cmd_setup_agent ;;
         agent-firewall) cmd_agent_firewall ;;

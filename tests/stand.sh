@@ -65,6 +65,7 @@ in_ns inet ip addr add $RU_SITE/32 dev lo
 in_ns inet ip addr add $WORLD_SITE/32 dev lo
 in_ns inet ip addr add $YT_SITE/32 dev lo
 in_ns inet ip addr add 8.8.8.8/32 dev lo
+for a in 203.0.113.10 198.51.100.7 192.0.2.50 192.0.2.60; do in_ns inet ip addr add $a/32 dev lo; done # сервисы для маршрутов
 
 # --- сайт, который показывает адрес посетителя ---
 cat >"$W/site.py" <<'EOF'
@@ -85,7 +86,8 @@ echo '<html>заглушка провайдера</html>' >"$W/bad.zone"
 
 # --- внешний сервер имён: youtube.com на YT_SITE, остальное на WORLD_SITE ---
 in_ns inet dnsmasq --no-resolv --no-hosts --bind-dynamic --listen-address=1.1.1.1 --listen-address=8.8.8.8 --listen-address=77.88.8.8 --pid-file="$W/up.pid" \
-    --address=/youtube.com/$YT_SITE --address=/example.org/$WORLD_SITE --user=root
+    --address=/youtube.com/$YT_SITE --address=/example.org/$WORLD_SITE --user=root \
+    --address=/discord.com/192.0.2.50 --address=/google.com/192.0.2.60
 
 # --- SSH на сервере 2 ---
 mkdir -p /run/sshd /root/.ssh; chmod 700 /root/.ssh
@@ -99,6 +101,15 @@ export AWGC_NO_QUEUE=1 # в ядре стенда нет очередей nfqueu
 export AWGC_YT_DEFAULT=exit # прежние проверки начинают с YouTube через сервер 2
 export AWGC_STATE=/etc/awg-test/state AWGC_AWG_DIR=/etc/awg-test/awg AWGC_SKIP_PACKAGES=1 AWGC_NO_SYSTEMD=1
 export AWGC_RU_URLS="file://$W/ru.zone"
+# Источники списков сервисов: RIPEstat и v2fly. Не все файлы есть: так проверяется отказ источника.
+export AWGC_RIPE_URL="file://$W/ripe/@ASN@.json" AWGC_V2FLY_URL="file://$W/v2fly"
+mkdir -p "$W/ripe" "$W/v2fly"
+echo '{"data":{"prefixes":[{"prefix":"203.0.113.0/24","timelines":[]},{"prefix":"2001:db8::/32"},{"prefix":"999.1.1.0/24"}]}}' >"$W/ripe/AS32590.json"
+echo '{"data":{"prefixes":[{"prefix":"198.51.100.0/24"}]}}' >"$W/ripe/AS62041.json"
+printf 'steampowered.com\nfull:store.steampowered.com\n# комментарий\nregexp:^bad$\n' >"$W/v2fly/steam"
+printf 'discord.com @ads\ninclude:discord-extra\nkeyword:disc\n' >"$W/v2fly/discord"
+printf 'domain:discordapp.net\nfull:gateway.discord.gg\n' >"$W/v2fly/discord-extra"
+printf 'google.com\nyoutube.com\nwww.youtube.com\ninclude:youtube\n' >"$W/v2fly/google"
 export AWGC_SSH_OPTS="-i $W/id -o UserKnownHostsFile=$W/kh -o BatchMode=yes -o SendEnv=AWGC_*"
 export PATH=/usr/local/bin:/usr/local/sbin:$PATH
 BIN=/usr/local/sbin/awg-cascade
@@ -216,6 +227,7 @@ t "ключи закрыты от других" test "$(stat -c %a "$AWGC_STATE/
 t "настройки закрыты от других" test "$(stat -c %a "$AWGC_AWG_DIR/awgclients.conf")" = 600
 
 . "$HERE/youtube-stand.inc"
+. "$HERE/routes-stand.inc"
 
 echo "--- пустой список ---"
 client_up andrey
@@ -232,6 +244,7 @@ t "без --yes не удаляет" test $rc -ne 0
 t "правила сервера 1 убраны"  test "$(in_ns entry sh -c 'iptables-save | grep -c AWGC')" = 0
 t "маршруты сервера 1 убраны" test -z "$(in_ns entry ip rule | grep fwmark)"
 t "набор сетей убран"         bash -c "! ip netns exec entry ipset list awgc_ru >/dev/null 2>&1"
+t "наборы маршрутов убраны"   bash -c "! ip netns exec entry ipset list -n | grep -q awgc_"
 t "сервер 1 выходит в сеть"   test "$(seen $WORLD_SITE entry)" = "$ENTRY_WAN"
 
 echo

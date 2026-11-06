@@ -264,3 +264,42 @@ dialog h2 { font-size: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .upd-notes { background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field); padding: 10px 12px; margin-bottom: 12px; font-size: 13.5px; color: var(--soft); max-height: 260px; overflow: auto; }
 .upd-notes p { margin: 0 0 4px; }
 .upd-help { margin: 0; padding-left: 18px; color: var(--soft); font-size: 14px; display: grid; gap: 6px; }
+
+/* маршруты */
+.page-note { color: var(--soft); margin: -8px 0 16px; max-width: 720px; }
+.route-list { display: grid; margin: 6px -8px -6px; }
+.route-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 8px; }
+.route-row + .route-row { border-top: 1px solid var(--line); }
+.route-row .pills { margin: 0; flex: none; flex-wrap: nowrap; }
+.route-info { display: grid; gap: 2px; min-width: 0; }
+.route-desc { color: var(--muted); font-size: 13px; }
+.route-meta { color: var(--dim); font-size: 12.5px; }
+.route-meta.warn { color: var(--warn); }
+.routes-grid { margin-top: 14px; }
+.rules-note { margin: 4px 0 12px; }
+.rule-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 10px; }
+.rule-actions .pills { margin: 0; }
+.rules { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
+.rule { display: flex; align-items: center; gap: 10px; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field); padding: 7px 8px 7px 12px; }
+.rule code, .route-check code { overflow-wrap: anywhere; min-width: 0; }
+.rule code { flex: 1; }
+.small-empty { padding: 6px 2px; }
+.check-row { display: flex; gap: 8px; }
+.check-row input { flex: 1; min-width: 0; }
+.route-check { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.route-check li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.more-tab { display: none; }
+.sheet { position: fixed; inset: 0; z-index: 14; background: rgb(0 0 0 / .45); display: flex; align-items: flex-end; }
+.sheet[hidden] { display: none; }
+.sheet-box { width: 100%; background: var(--surface); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; padding: 10px 10px calc(76px + env(safe-area-inset-bottom)); display: grid; gap: 2px; }
+.sheet-item { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 14px; background: transparent; border: 0; border-radius: var(--r-field); color: var(--ink); font-size: 15.5px; text-align: left; }
+.sheet-item svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sheet-item:hover { background: var(--hover); }
+@media (max-width: 960px) {
+  .more-tab { display: flex; }
+  .side nav .tab[data-page="servers"], .side nav .tab[data-page="updates"] { display: none; }
+  .route-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .route-row .pills { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .route-row .pills button { padding: 8px 4px; white-space: nowrap; }
+}
+

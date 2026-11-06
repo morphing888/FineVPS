@@ -182,13 +182,15 @@ $("logout-m").onclick = logout;
 // ---------- навигация ----------
 function stopPoll() { clearTimeout(timer); timer = null; }
 function go(name) {
-  if (!["users", "traffic", "servers", "youtube", "updates"].includes(name)) name = "traffic";
+  if (!["users", "traffic", "servers", "youtube", "routes", "updates"].includes(name)) name = "traffic";
   page = name;
   history.replaceState(null, "", "#" + name);
   document.querySelectorAll(".tab[data-page]").forEach(t => {
     if (t.dataset.page === name) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
   });
   document.querySelectorAll(".page").forEach(p => { p.hidden = p.id !== "page-" + name; });
+  if (["servers", "updates"].includes(name)) $("more-tab").setAttribute("aria-current", "page"); else $("more-tab").removeAttribute("aria-current");
+  closeSheet();
   refresh();
 }
 async function refresh() {
@@ -197,6 +199,11 @@ async function refresh() {
   try {
     if (at === "users") renderUsers(await api("users"));
     else if (at === "youtube") renderYoutube(await api("youtube"));
+    else if (at === "routes") {
+      const d = await api("routes");
+      if (page === at) renderRoutes(d);
+      return; // страница не обновляется сама: на ней вводят адреса
+    }
     else if (at === "updates") {
       const s = await api("update");
       if (page !== at) return;
@@ -218,6 +225,130 @@ async function refresh() {
 }
 document.querySelectorAll(".tab[data-page]").forEach(t => { t.onclick = () => go(t.dataset.page); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("app").hidden) refresh(); });
+
+// ---------- «Ещё» на телефоне ----------
+function closeSheet() { $("more-sheet").hidden = true; $("more-tab").setAttribute("aria-expanded", "false"); }
+$("more-tab").onclick = () => {
+  const open = $("more-sheet").hidden;
+  $("more-sheet").hidden = !open;
+  $("more-tab").setAttribute("aria-expanded", String(open));
+  if (open) $("more-sheet").querySelector("button").focus();
+};
+$("more-sheet").onclick = ev => { if (ev.target === ev.currentTarget) closeSheet(); };
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && !$("more-sheet").hidden) { closeSheet(); $("more-tab").focus(); } });
+document.querySelectorAll("[data-go]").forEach(b => { b.onclick = () => go(b.dataset.go); });
+
+// ---------- маршруты ----------
+const TARGETS = [["auto", "Как обычно"], ["1", "Сервер 1"], ["2", "Сервер 2"]];
+const targetName = t => t === "1" ? "Сервер 1" : t === "2" ? "Сервер 2" : "Как обычно";
+let ruleTarget = "1", routesBusy = false;
+function count(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  const w = m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
+  return n.toLocaleString("ru-RU") + " " + w;
+}
+function when(sec) {
+  const d = new Date(sec * 1000);
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) + " в " + d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+function renderRoutes(d) {
+  $("routes-services").replaceChildren(...d.services.map(s => {
+    const row = el("div", "route-row" + (s.target !== "auto" ? " set" : ""));
+    const info = el("div", "route-info");
+    info.append(el("strong", "", s.name), el("span", "route-desc", s.desc));
+    let meta = "Списки загрузятся, когда выберешь сервер";
+    if (s.updated) {
+      meta = [s.nets ? count(s.nets, "сеть", "сети", "сетей") : "", count(s.domains, "домен", "домена", "доменов"), "обновлено " + when(s.updated)].filter(Boolean).join(" · ");
+      if (s.error) meta += " · источник не ответил, оставлен прежний список";
+    }
+    info.append(el("span", "route-meta" + (s.error ? " warn" : ""), meta));
+    const pills = el("div", "pills");
+    pills.setAttribute("role", "group");
+    pills.setAttribute("aria-label", "Маршрут: " + s.name);
+    TARGETS.forEach(([v, label]) => {
+      const b = el("button", "", label);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(s.target === v));
+      b.onclick = () => { if (s.target !== v) setRoute(s, v); };
+      pills.append(b);
+    });
+    row.append(info, pills);
+    return row;
+  }));
+  const rules = $("rules");
+  if (!d.rules.length) rules.replaceChildren(el("li", "empty small-empty", "Своих правил пока нет"));
+  else rules.replaceChildren(...d.rules.map(r => {
+    const li = el("li", "rule");
+    const del = el("button", "small", "Удалить");
+    del.type = "button";
+    del.setAttribute("aria-label", "Удалить правило " + r.value);
+    del.onclick = () => delRule(r);
+    li.append(el("code", "", r.value), el("span", "tag " + (r.target === "1" ? "on" : "brand"), targetName(r.target)), del);
+    return li;
+  }));
+}
+function lockRoutes(on) {
+  routesBusy = on;
+  document.querySelectorAll("#page-routes button").forEach(b => { b.disabled = on; });
+}
+async function routesDo(path, body, done, wait) {
+  if (routesBusy) return false;
+  lockRoutes(true);
+  if (wait) toast(wait);
+  let ok = true;
+  try {
+    await api(path, { method: "POST", body });
+    if (done) toast(done);
+  } catch (e) { ok = false; toast(e.message); }
+  lockRoutes(false);
+  try { renderRoutes(await api("routes")); } catch (_) { /* покажет следующий заход */ }
+  return ok;
+}
+function setRoute(s, v) {
+  routesDo("routes/service", { id: s.id, target: v }, s.name + ": " + targetName(v).toLowerCase(),
+    s.updated ? "Применяю маршрут" : "Загружаю списки " + s.name + ", это займёт до минуты");
+}
+async function delRule(r) {
+  if (await routesDo("routes/rule/delete", { value: r.value })) {
+    toast("Правило " + r.value + " удалено", () => routesDo("routes/rule", { value: r.value, target: r.target }, "Правило возвращено"));
+  }
+}
+document.querySelectorAll("[data-rule-target]").forEach(b => {
+  b.onclick = () => {
+    ruleTarget = b.dataset.ruleTarget;
+    document.querySelectorAll("[data-rule-target]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  };
+});
+$("rule-form").onsubmit = async ev => {
+  ev.preventDefault();
+  const err = $("rule-error"), v = $("rule-value").value.trim();
+  err.hidden = true;
+  if (routesBusy) return;
+  lockRoutes(true);
+  try {
+    await api("routes/rule", { method: "POST", body: { value: v, target: ruleTarget } });
+    $("rule-value").value = "";
+    toast("Правило добавлено: " + targetName(ruleTarget).toLowerCase());
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+  lockRoutes(false);
+  try { renderRoutes(await api("routes")); } catch (_) { /* покажет следующий заход */ }
+};
+$("route-check-form").onsubmit = async ev => {
+  ev.preventDefault();
+  const err = $("route-check-error"), list = $("route-check"), btn = ev.target.querySelector("button");
+  err.hidden = true;
+  btn.disabled = true;
+  try {
+    const r = await api("routes/check", { method: "POST", body: { host: $("route-check-host").value.trim() } });
+    list.replaceChildren(...r.results.map(x => {
+      const li = el("li", "");
+      li.append(el("code", "", x.ip), el("span", "tag " + (x.target === "1" ? "on" : "brand"), targetName(x.target)), el("span", "route-desc", x.reason));
+      return li;
+    }));
+  } catch (e) { list.replaceChildren(); err.textContent = e.message; err.hidden = false; }
+  btn.disabled = false;
+};
+$("btn-routes-update").onclick = () => routesDo("routes/update", null, "Списки обновлены", "Обновляю списки сервисов, это займёт до минуты");
 
 // ---------- обновления ----------
 let updInfo = null, updWaiting = false;

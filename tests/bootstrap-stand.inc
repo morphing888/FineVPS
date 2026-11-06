@@ -33,7 +33,7 @@ t "порт панели открыт" bash -c "ip netns exec entry iptables -S 
 
 in_ns entry "$PANEL_FILE" serve --state "$AWGC_STATE" --port "$PANEL_PORT" --base "/$PANEL_PATH" --host "$ENTRY_WAN" --cli "$BIN" >"$W/p.log" 2>&1 &
 sleep 1
-in_ns inet env PANEL_LINK="$LINK" R2_IP="$EXIT_WAN" R2_PASS="$R2PW" SHOTS="$E2E_SHOTS" NODE_PATH="$(npm root -g 2>/dev/null)" node "$HERE/e2e-boot.js"
+in_ns inet env PANEL_LINK="$LINK" R2_IP="$EXIT_WAN" R2_PASS="$R2PW" SHOTS="${E2E_SHOTS:-}" NODE_PATH="$(npm root -g 2>/dev/null)" node "$HERE/e2e-boot.js"
 rc=$?
 t "сценарии в браузере" test $rc -eq 0
 
@@ -62,6 +62,7 @@ t "повторный запуск не показывает ссылку" bash 
 t "адрес панели не изменился" grep -q "$PANEL_PATH" "$W/boot2.log"
 
 echo "--- обновление ---"
+CUR=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$SRC")
 mkrel() {
     local d="$W/rels/$1"
     mkdir -p "$d"
@@ -76,23 +77,23 @@ mkrel v9.9.7 's/^write_units() {$/write_units() { die "сбой для пров�
 printf '{"tag_name":"v9.9.9","body":"## Что нового\\n- Первая строка\\n- Вторая строка"}' >"$W/api.json"
 b0=$(sha256sum <"$BIN"); p0=$(sha256sum <"$PANEL_FILE")
 "${ENT[@]}" update v0.0.1 >"$W/u0.log" 2>&1
-t "старая версия не ставится" grep -q 'установлена последняя версия 0.7.0' "$W/u0.log"
+t "старая версия не ставится" grep -q "установлена последняя версия $CUR" "$W/u0.log"
 "${ENT[@]}" update v9.9.8 >"$W/u1.log" 2>&1; rc=$?
 t "подменённое обновление отклонено" bash -c "test $rc -ne 0 && grep -q 'контрольная сумма не совпала' '$W/u1.log'"
 t "после отказа программа прежняя" test "$b0" = "$(sha256sum <"$BIN")"
 "${ENT[@]}" update v9.9.7 >"$W/u2.log" 2>&1; rc=$?
 sed 's/\x1b\[[0-9;]*m//g' "$W/u2.log" | grep -E 'ОШИБКА|ОТКАТ|!!' | tail -3
-t "сбойное обновление откатилось" bash -c "test $rc -ne 0 && grep -q 'возвращена версия 0.7.0' '$W/u2.log'"
+t "сбойное обновление откатилось" bash -c "test $rc -ne 0 && grep -q 'возвращена версия $CUR' '$W/u2.log'"
 t "после отката программа прежняя" test "$b0" = "$(sha256sum <"$BIN")"
 t "после отката панель прежняя" test "$p0" = "$(sha256sum <"$PANEL_FILE")"
 client_up andrey
 t "после отката каскад работает" test "$(seen $WORLD_SITE)" = "$EXIT_WAN"
 client_down
-in_ns inet env PANEL_URL="${LINK%%\?*}" SHOTS="$E2E_SHOTS" NODE_PATH="$(npm root -g 2>/dev/null)" node "$HERE/e2e-update.js"
+in_ns inet env CUR_VERSION="$CUR" PANEL_URL="${LINK%%\?*}" SHOTS="${E2E_SHOTS:-}" NODE_PATH="$(npm root -g 2>/dev/null)" node "$HERE/e2e-update.js"
 rc=$?
 t "обновление из панели в браузере" test $rc -eq 0
 t "программа обновлена до 9.9.9" grep -qx 'VERSION="9.9.9"' "$BIN"
-t "резервная копия прежней версии есть" grep -qx 'VERSION="0.7.0"' "$AWGC_STATE/backup/awg-cascade.sh"
+t "резервная копия прежней версии есть" grep -qx "VERSION=\"$CUR\"" "$AWGC_STATE/backup/awg-cascade.sh"
 # shellcheck disable=SC1090
 . "$AWGC_STATE/cascade.env"
 t "после обновления способ YouTube тот же" test "$YOUTUBE_MODE/$YOUTUBE_PRESET" = bypass/t2

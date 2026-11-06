@@ -23,6 +23,8 @@
   <symbol id="i-play" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="m10 9 5 3-5 3z"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2.5"/><rect x="3" y="13" width="18" height="7" rx="2.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
   <symbol id="i-update" viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 2.5v4.2h-4.2M6 21.5v-4.2h4.2"/></symbol>
+  <symbol id="i-route" viewBox="0 0 24 24"><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="5.5" r="2.5"/><path d="M8 18.5h7a3.5 3.5 0 0 0 0-7H9a3.5 3.5 0 0 1 0-7h7"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/></symbol>
   <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c3 3 3 16 0 19M12 2.5c-3 3-3 16 0 19"/></symbol>
@@ -104,8 +106,10 @@
       <button class="tab" data-page="traffic" type="button"><svg><use href="#i-chart"/></svg><span>Трафик</span></button>
       <button class="tab" data-page="users" type="button"><svg><use href="#i-users"/></svg><span>Пользователи</span></button>
       <button class="tab" data-page="youtube" type="button"><svg><use href="#i-play"/></svg><span>YouTube</span></button>
+      <button class="tab" data-page="routes" type="button"><svg><use href="#i-route"/></svg><span>Маршруты</span></button>
       <button class="tab" data-page="servers" type="button"><svg><use href="#i-server"/></svg><span>Серверы</span></button>
       <button class="tab" data-page="updates" type="button"><svg><use href="#i-update"/></svg><span>Обновления</span></button>
+      <button id="more-tab" class="tab more-tab" type="button" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#i-more"/></svg><span>Ещё</span></button>
     </nav>
     <div class="side-foot">
       <p id="side-version" class="dim"></p>
@@ -241,6 +245,51 @@
       </div>
     </section>
 
+    <!-- Маршруты -->
+    <section id="page-routes" class="page" hidden>
+      <h1>Маршруты</h1>
+      <p class="page-note">«Как обычно»: российские сети идут с сервера 1, всё остальное через сервер 2. Для сервиса можно выбрать сервер вручную.</p>
+      <section class="card">
+        <div class="card-head">
+          <h2>Сервисы</h2>
+          <button id="btn-routes-update" class="small" type="button">Обновить списки</button>
+        </div>
+        <div id="routes-services" class="route-list"></div>
+      </section>
+      <div class="grid routes-grid">
+        <section class="card col-7">
+          <h2>Свои правила</h2>
+          <p class="dim rules-note">Сайт вместе с поддоменами, IP-адрес или подсеть. Свои правила важнее сервисов.</p>
+          <form id="rule-form" class="rule-form">
+            <label for="rule-value">Адрес</label>
+            <input id="rule-value" placeholder="example.com или 203.0.113.0/24" autocapitalize="none" autocomplete="off" spellcheck="false" required>
+            <div class="rule-actions">
+              <div class="pills" role="group" aria-label="Через какой сервер">
+                <button type="button" data-rule-target="1" aria-pressed="true">Сервер 1</button>
+                <button type="button" data-rule-target="2" aria-pressed="false">Сервер 2</button>
+              </div>
+              <button class="primary" type="submit">Добавить</button>
+            </div>
+          </form>
+          <p id="rule-error" class="error" role="alert" hidden></p>
+          <ul id="rules" class="rules"></ul>
+        </section>
+        <section class="card col-5">
+          <h2>Проверить адрес</h2>
+          <p class="dim rules-note">Покажет, через какой сервер пойдёт сайт и почему.</p>
+          <form id="route-check-form" class="check-form">
+            <label for="route-check-host">Сайт или IP-адрес</label>
+            <div class="check-row">
+              <input id="route-check-host" placeholder="store.steampowered.com" autocapitalize="none" autocomplete="off" spellcheck="false" required>
+              <button type="submit">Проверить</button>
+            </div>
+          </form>
+          <p id="route-check-error" class="error" role="alert" hidden></p>
+          <ul id="route-check" class="route-check"></ul>
+        </section>
+      </div>
+    </section>
+
     <!-- Обновления -->
     <section id="page-updates" class="page" hidden>
       <h1>Обновления</h1>
@@ -273,6 +322,13 @@
       </div>
     </section>
   </main>
+
+  <div id="more-sheet" class="sheet" hidden>
+    <div class="sheet-box" role="dialog" aria-modal="true" aria-label="Другие разделы">
+      <button class="sheet-item" type="button" data-go="servers"><svg><use href="#i-server"/></svg>Серверы</button>
+      <button class="sheet-item" type="button" data-go="updates"><svg><use href="#i-update"/></svg>Обновления</button>
+    </div>
+  </div>
 </div>
 
 <dialog id="qr-dialog">

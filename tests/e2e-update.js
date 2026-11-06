@@ -1,7 +1,7 @@
 // Обновление из панели. Запускается из tests/bootstrap-stand.inc.
 const { chromium } = require("playwright");
 const assert = require("assert");
-const { PANEL_URL, SHOTS } = process.env;
+const { PANEL_URL, SHOTS, CUR_VERSION } = process.env;
 let passed = 0, failed = 0;
 async function t(name, fn) {
   try { await fn(); console.log("PASS  " + name); passed++; }
@@ -21,7 +21,7 @@ async function t(name, fn) {
 
   await t("раздел открывается с текущей версией", async () => {
     await pg.waitForSelector("#page-updates:not([hidden])");
-    assert.strictEqual(await pg.textContent("#upd-current"), "0.7.0");
+    assert.strictEqual(await pg.textContent("#upd-current"), CUR_VERSION);
     assert.ok(await pg.isHidden("#btn-upd-start"));
   });
   await t("проверка находит новую версию и что в ней нового", async () => {
@@ -36,7 +36,7 @@ async function t(name, fn) {
   await t("на телефоне без горизонтальной прокрутки", async () => {
     await pg.setViewportSize({ width: 390, height: 844 });
     assert.ok(await pg.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
-    const rows = await pg.$$eval(".side nav .tab", ts => new Set(ts.map(x => Math.round(x.getBoundingClientRect().top))).size);
+    const rows = await pg.$$eval(".side nav .tab", ts => new Set(ts.filter(x => x.offsetParent).map(x => Math.round(x.getBoundingClientRect().top))).size);
     assert.strictEqual(rows, 1, "вкладки в несколько рядов");
     const cut = await pg.$$eval(".side nav .tab span", ss => ss.filter(s => s.scrollWidth > s.clientWidth).map(s => s.textContent));
     assert.strictEqual(cut.join(), "", "подписи обрезаны");
