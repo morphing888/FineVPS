@@ -1,8 +1,7 @@
 name: Выпуск
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,8 +15,8 @@ jobs:
         with:
           go-version-file: panel/go.mod
           cache: false
-      - name: Проверить версию
-        run: grep -qx "VERSION=\"${GITHUB_REF_NAME#v}\"" awg-cascade.sh.in
+      - name: Определить версию
+        run: echo "TAG=v$(sed -n 's/^VERSION="\(.*\)"$/\1/p' awg-cascade.sh.in)" >>"$GITHUB_ENV"
       - name: Собрать
         run: bash build.sh
       - name: Посчитать контрольные суммы
@@ -26,6 +25,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" awg-cascade.sh awg-cascade-panel SHA256SUMS \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" awg-cascade.sh awg-cascade-panel SHA256SUMS \
+            --target "$GITHUB_SHA" --title "$TAG" \
             --notes 'Установка: curl -fsSL https://raw.githubusercontent.com/morphing888/FineVPS/main/install.sh | sudo bash'
