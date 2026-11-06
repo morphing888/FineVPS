@@ -123,6 +123,7 @@ type App struct {
 	authPath string
 	mu       sync.Mutex
 	sessions map[string]time.Time
+	sessPath string
 	fails    map[string]*failInfo
 	static   http.Handler
 	cliMu    sync.Mutex
@@ -139,7 +140,8 @@ func NewApp(cfg Config, col *Collector) (*App, error) {
 		cfg:      cfg,
 		col:      col,
 		authPath: filepath.Join(cfg.State, "panel", "auth.json"),
-		sessions: map[string]time.Time{},
+		sessions: loadSessions(filepath.Join(cfg.State, "panel", "sessions.json")),
+		sessPath: filepath.Join(cfg.State, "panel", "sessions.json"),
 		fails:    map[string]*failInfo{},
 		static:   http.FileServer(http.FS(sub)),
 	}, nil
@@ -177,6 +179,9 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /login", a.login)
 	api.HandleFunc("POST /logout", a.auth(a.logout))
 	api.HandleFunc("GET /hello", a.hello)
+	api.HandleFunc("GET /update", a.auth(a.updateState))
+	api.HandleFunc("POST /update/check", a.auth(a.updateCheck))
+	api.HandleFunc("POST /update/start", a.auth(a.updateStart))
 	api.HandleFunc("POST /setup/admin", a.setupAdmin)
 	api.HandleFunc("GET /setup/state", a.auth(a.setupState))
 	api.HandleFunc("POST /setup/connect", a.auth(a.setupConnect))
@@ -338,6 +343,7 @@ func (a *App) newSession(w http.ResponseWriter, ip string) {
 		}
 	}
 	a.sessions[tokenHash(tok)] = now.Add(sessionLife)
+	a.saveSessions()
 	a.mu.Unlock()
 	a.setCookie(w, tok, int(sessionLife.Seconds()))
 	writeJSON(w, map[string]bool{"ok": true})
@@ -347,6 +353,7 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		a.mu.Lock()
 		delete(a.sessions, tokenHash(c.Value))
+		a.saveSessions()
 		a.mu.Unlock()
 	}
 	a.setCookie(w, "", -1)
@@ -379,6 +386,7 @@ func (a *App) password(w http.ResponseWriter, r *http.Request) {
 	c, _ := r.Cookie(cookieName)
 	a.mu.Lock()
 	a.sessions = map[string]time.Time{tokenHash(c.Value): time.Now().Add(sessionLife)}
+	a.saveSessions()
 	a.mu.Unlock()
 	writeJSON(w, map[string]bool{"ok": true})
 }

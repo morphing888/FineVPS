@@ -96,6 +96,7 @@ in_ns exit /usr/sbin/sshd -p 22 -h "$W/host" -o PermitRootLogin=yes -o PidFile="
     -o 'AcceptEnv AWGC_*' -o UsePAM=no
 
 export AWGC_NO_QUEUE=1 # в ядре стенда нет очередей nfqueue
+export AWGC_YT_DEFAULT=exit # прежние проверки начинают с YouTube через сервер 2
 export AWGC_STATE=/etc/awg-test/state AWGC_AWG_DIR=/etc/awg-test/awg AWGC_SKIP_PACKAGES=1 AWGC_NO_SYSTEMD=1
 export AWGC_RU_URLS="file://$W/ru.zone"
 export AWGC_SSH_OPTS="-i $W/id -o UserKnownHostsFile=$W/kh -o BatchMode=yes -o SendEnv=AWGC_*"

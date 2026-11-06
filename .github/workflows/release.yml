@@ -27,4 +27,4 @@ jobs:
         run: |
           gh release create "$TAG" awg-cascade.sh awg-cascade-panel SHA256SUMS \
             --target "$GITHUB_SHA" --title "$TAG" \
-            --notes 'Установка: curl -fsSL https://raw.githubusercontent.com/morphing888/FineVPS/main/install.sh | sudo bash'
+            --notes-file RELEASE_NOTES.md

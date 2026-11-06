@@ -193,15 +193,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   });
   await t("YouTube: «не помогло» включает следующий способ", async () => {
     await opt("С сервера 1 без обхода").getByRole("button", { name: "Не помогло, следующий" }).click();
-    await opt("Разрезание пакета").getByText("Сейчас включено").waitFor({ timeout: 15000 });
+    await opt("Разрезание на TLS-записи").getByText("Сейчас включено").waitFor({ timeout: 15000 });
     assert.ok(await opt("С сервера 1 без обхода").getByText("Не помогло").first().isVisible());
   });
   if (SHOTS) { await sleep(500); await pg.mouse.move(2, 2); await pg.screenshot({ path: SHOTS + "/youtube.png", fullPage: true }); }
   await t("YouTube: отметка «помогло» сохраняется", async () => {
-    await opt("Разрезание пакета").getByRole("button", { name: "Помогло", exact: true }).click();
-    await opt("Разрезание пакета").locator(".tag.on").waitFor({ timeout: 10000 });
+    await opt("Разрезание на TLS-записи").getByRole("button", { name: "Помогло", exact: true }).click();
+    await opt("Разрезание на TLS-записи").locator(".tag.on").waitFor({ timeout: 10000 });
     await pg.reload();
-    await opt("Разрезание пакета").locator(".tag.on").waitFor({ timeout: 10000 });
+    await opt("Разрезание на TLS-записи").locator(".tag.on").waitFor({ timeout: 10000 });
   });
   await t("YouTube: возврат через сервер 2", async () => {
     await opt("Через сервер 2").getByRole("button", { name: "Включить" }).click();
@@ -250,13 +250,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await pg.click("#login-form button");
     await pg.waitForSelector(".side");
   });
-  await t("после перезапуска панели история на месте, просит вход", async () => {
+  await t("после перезапуска панели история на месте, вход сохранён", async () => {
     ctl("panel-restart");
     await sleep(2500);
-    await pg.waitForSelector("#login:not([hidden])", { timeout: 15000 });
-    await pg.fill("#login-user", ADMIN);
-    await pg.fill("#login-pass", "new-password-123");
-    await pg.click("#login-form button");
+    await pg.reload();
+    await pg.waitForSelector("#app:not([hidden])", { timeout: 15000 });
+    assert.ok(await pg.isHidden("#login"));
     await pg.click('.tab[data-page="traffic"]');
     await pg.waitForFunction(() => document.querySelectorAll(".chart svg[role=img]").length === 3, null, { timeout: 15000 });
   });

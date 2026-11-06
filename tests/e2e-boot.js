@@ -46,7 +46,7 @@ const noScroll = pg => pg.evaluate(() => document.documentElement.scrollWidth <=
     await pg.fill("#exit-pass", "wrong-root-password");
     await pg.click("#exit-form button");
     await pg.waitForSelector("#exit-error:not([hidden])", { timeout: 60000 });
-    assert.match(await pg.textContent("#exit-error"), /не удалось подключиться/);
+    assert.match(await pg.textContent("#exit-error"), /не удалось подключиться/i);
     assert.strictEqual(await pg.inputValue("#exit-ip"), R2_IP);
     assert.strictEqual(await pg.inputValue("#exit-pass"), "");
   });

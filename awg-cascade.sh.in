@@ -13,7 +13,7 @@
 set -euo pipefail
 umask 077
 
-VERSION="0.6.0"
+VERSION="0.7.0"
 SELF="$(readlink -f "$0")"
 BIN="/usr/local/sbin/awg-cascade"
 PANEL_BIN="/usr/local/sbin/awg-cascade-panel"
@@ -55,6 +55,10 @@ BYEDPI_SHA="98f73c32eacb571ebd88d790f6376ed9e70f02d44c1fe862472ecea75cd7117d"
 WGCF_VER="2.3.1"
 WGCF_SHA="4fb7a136aa470ece11d17949c7db07b040ec9c604742dc8680bcf1889f85d0c8"
 PROXY_PORT=8703
+REPO="morphing888/FineVPS"
+RELEASE_BASE="${AWGC_RELEASE_BASE:-https://github.com/$REPO/releases/download}"
+RELEASE_API="${AWGC_RELEASE_API:-https://api.github.com/repos/$REPO/releases/latest}"
+YT_DEFAULT="${AWGC_YT_DEFAULT:-t2}"
 IF_WARP="awgwarp"
 WARP_TABLE=8702
 WARP_MARK="0x200000"
@@ -936,6 +940,9 @@ TLS_FAKE="fake:blob=fake_default_tls:tcp_md5"
 yt_presets() {
     local h="--out-range=-d10 --payload=tls_client_hello" z="zapret2" tp="zapret: программа tpws" bd="ByeDPI"
     cat <<EOF
+t2|$tp|Разрезание на TLS-записи|Делит начальный запрос внутри TLS. Включается при установке|proxy-tpws|--tlsrec=sniext+1 --split-pos=midsld
+t1|$tp|Разрезание и обратный порядок|Работает как прокси на сервере. Может добавить небольшую задержку|proxy-tpws|--split-pos=1,midsld --disorder=tls
+t3|$tp|Срочные данные|Разрезает запрос и добавляет байт срочных данных|proxy-tpws|--split-pos=1 --oob=tls
 p1|$z|Разрезание пакета|Делит начало соединения на части. Самый мягкий способ|nfq|$h --lua-desync=multisplit:pos=1,midsld
 p2|$z|Обратный порядок|Отправляет части начала соединения в обратном порядке|nfq|$h --lua-desync=multidisorder:pos=1,midsld
 p3|$z|Перекрытие начала|Добавляет к первой части мусорное начало|nfq|$h --lua-desync=multisplit:pos=1:seqovl=5:seqovl_pattern=0x1603030000
@@ -945,9 +952,6 @@ p6|$z|Фальшивый запрос с другим номером|Фальш�
 p7|$z|Запросы к разрешённому сайту|Фальшивые запросы к vk.com, настоящий разрезан|nfq|$h --lua-desync=$TLS_FAKE:repeats=6:tls_mod=rnd,dupsid,sni=vk.com --lua-desync=multisplit:pos=1,midsld
 p8|$z|Ограниченное время жизни|Фальшивые пакеты затухают по пути и не доходят до сайта|nfq|$h --lua-desync=fake:blob=fake_default_tls:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5 --lua-desync=fakedsplit:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5
 p9|GoodbyeDPI|Приёмы GoodbyeDPI|Сама программа только для Windows. Здесь её режим -9 повторён через zapret2|nfq|$h --lua-desync=fake:blob=fake_default_tls:tcp_seq=-10000 --lua-desync=fake:blob=fake_default_tls:badsum --lua-desync=multidisorder:pos=2
-t1|$tp|Разрезание и обратный порядок|Работает как прокси на сервере. Может добавить небольшую задержку|proxy-tpws|--split-pos=1,midsld --disorder=tls
-t2|$tp|Разрезание на TLS-записи|Делит запрос внутри TLS. Часть сайтов может не открыться|proxy-tpws|--tlsrec=sniext+1 --split-pos=midsld
-t3|$tp|Срочные данные|Разрезает запрос и добавляет байт срочных данных|proxy-tpws|--split-pos=1 --oob=tls
 b1|$bd|Обратный порядок и TLS-записи|Срабатывает при обрыве соединения. Пример из документации ByeDPI|proxy-byedpi|--disorder 1 --auto=torst --tlsrec 1+s
 b2|$bd|Фальшивый пакет с малым временем жизни|Фальшивый пакет затухает по пути к сайту|proxy-byedpi|--fake -1 --ttl 8
 b3|$bd|Фальшивый пакет и TLS-записи|Фальшивый пакет с подписью MD5, запрос разделён внутри TLS|proxy-byedpi|--fake -1 --md5sig --tlsrec 1+s
@@ -1778,6 +1782,12 @@ cmd_install() {
     if [[ -x $PANEL_BIN ]]; then
         ( cmd_agent_install ) || warn "сервер 2 пока без статистики. Повторить: awg-cascade agent-install"
     fi
+    if [[ -z $YOUTUBE_PRESET && $YT_DEFAULT != exit ]]; then
+        step "YouTube"
+        exec 9>&- # снять блокировку маршрутов: её возьмёт переключение способа
+        ( yt_set_preset "$YT_DEFAULT" ) || warn "способ обхода не включился. Другой способ можно выбрать в панели, раздел YouTube"
+        load_env
+    fi
     if (( ! no_user )) && ! compgen -G "$USERS/*.peer" >/dev/null; then
         [[ -n $first_user ]] || ask first_user "Имя первого пользователя" "user1"
         user_add "$first_user"
@@ -1837,6 +1847,87 @@ cmd_bootstrap() { # подготовка сервера 1 до подключе�
     else
         show_setup_link
     fi
+}
+
+panel_healthy() {
+    if [[ $NO_SYSTEMD == 1 ]]; then "$PANEL_BIN" version >/dev/null 2>&1; return; fi
+    local i
+    for (( i = 0; i < 20; i++ )); do
+        if systemctl is-active --quiet awg-cascade-panel.service \
+           && curl -ks -o /dev/null --max-time 3 "https://127.0.0.1:$PANEL_PORT/$PANEL_PATH/"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+update_start() { # обновление идёт отдельно от панели: она перезапустится в процессе
+    local log="$STATE/panel/update.log"
+    mkdir -p "$STATE/panel"
+    : >"$log"
+    chmod 600 "$log"
+    if [[ $NO_SYSTEMD == 1 ]]; then
+        setsid "$BIN" update "$1" >>"$log" 2>&1 </dev/null &
+    else
+        systemctl reset-failed awg-cascade-update.service >/dev/null 2>&1 || true
+        systemd-run --quiet --unit=awg-cascade-update --collect \
+            /bin/bash -c 'exec "$0" update "$1" >>"$2" 2>&1 </dev/null' "$BIN" "$1" "$log" \
+            || die "не удалось запустить обновление"
+    fi
+    ok "обновление до ${1#v} запущено"
+}
+
+cmd_update() {
+    need_root; need_entry
+    local start=0 tag dir="$STATE/update" f
+    if [[ ${1:-} == --start ]]; then start=1; shift; fi
+    tag=${1:-}
+    if [[ -z $tag ]]; then
+        tag=$(curl -fsSL --max-time 20 -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
+              | grep -o '"tag_name": *"v[0-9.]*"' | grep -o 'v[0-9.]*' | head -n 1) || true
+        [[ -n $tag ]] || die "не удалось узнать последнюю версию на GitHub"
+    fi
+    [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "неверная версия: $tag"
+    if [[ $(printf '%s\n%s\n' "${tag#v}" "$VERSION" | sort -V | tail -n 1) == "$VERSION" ]]; then
+        ok "установлена последняя версия $VERSION"
+        return 0
+    fi
+    exec 8>"$STATE/update.lock"
+    flock -w 5 8 || die "обновление уже идёт"
+    if (( start )); then
+        exec 8>&-
+        update_start "$tag"
+        return
+    fi
+
+    say "== Обновление $VERSION → ${tag#v} =="
+    rm -rf "$STATE/update"
+    mkdir -m 700 "$dir"
+    for f in awg-cascade.sh awg-cascade-panel SHA256SUMS; do
+        curl -fsSL --retry 3 --connect-timeout 15 -o "$dir/$f" "$RELEASE_BASE/$tag/$f" || die "не удалось скачать $f"
+    done
+    (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || die "контрольная сумма не совпала, обновление остановлено"
+    grep -qx "VERSION=\"${tag#v}\"" "$dir/awg-cascade.sh" || die "скачанная программа не той версии"
+    chmod 755 "$dir/awg-cascade.sh" "$dir/awg-cascade-panel"
+    "$dir/awg-cascade-panel" version >/dev/null 2>&1 || die "новая панель не запускается на этом сервере"
+    ok "файлы скачаны, контрольные суммы сошлись"
+
+    mkdir -p "$STATE/backup"
+    chmod 700 "$STATE/backup"
+    cp "$BIN" "$STATE/backup/awg-cascade.sh"
+    cp "$PANEL_BIN" "$STATE/backup/awg-cascade-panel"
+    if bash "$dir/awg-cascade.sh" bootstrap --panel "$dir/awg-cascade-panel" </dev/null && panel_healthy; then
+        rm -rf "$STATE/update"
+        say "ГОТОВО: ${tag#v}"
+        return 0
+    fi
+    warn "новая версия не заработала, возвращаю $VERSION"
+    say "ОТКАТ: $VERSION"
+    bash "$STATE/backup/awg-cascade.sh" panel-install "$STATE/backup/awg-cascade-panel" </dev/null \
+        || warn "откат не завершился. Выполни: bash $STATE/backup/awg-cascade.sh panel-install $STATE/backup/awg-cascade-panel"
+    rm -rf "$STATE/update"
+    die "обновление не удалось, возвращена версия $VERSION"
 }
 
 cmd_setup_link() {
@@ -1939,6 +2030,7 @@ awg-cascade $VERSION: каскад AmneziaWG на двух серверах
   youtube-test            долгий автоподбор способа
   panel-install [ФАЙЛ]    установить или обновить панель
   panel-password          создать новый пароль панели
+  update [vX.Y.Z]         обновить программу с GitHub, при сбое вернуть прежнюю версию
   agent-install           поставить сбор статистики на сервер 2
   uninstall --yes         удалить каскад с этого сервера
 EOF
@@ -1964,6 +2056,7 @@ main() {
         youtube-test) cmd_youtube_test "$@" ;;
         panel-install)  cmd_panel_install "$@" ;;
         panel-password) cmd_panel_password ;;
+        update)     cmd_update "$@" ;;
         agent-install)  cmd_agent_install ;;
         setup-agent)    cmd_setup_agent ;;
         agent-firewall) cmd_agent_firewall ;;

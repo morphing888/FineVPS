@@ -182,7 +182,7 @@ $("logout-m").onclick = logout;
 // ---------- навигация ----------
 function stopPoll() { clearTimeout(timer); timer = null; }
 function go(name) {
-  if (!["users", "traffic", "servers", "youtube"].includes(name)) name = "traffic";
+  if (!["users", "traffic", "servers", "youtube", "updates"].includes(name)) name = "traffic";
   page = name;
   history.replaceState(null, "", "#" + name);
   document.querySelectorAll(".tab[data-page]").forEach(t => {
@@ -197,6 +197,12 @@ async function refresh() {
   try {
     if (at === "users") renderUsers(await api("users"));
     else if (at === "youtube") renderYoutube(await api("youtube"));
+    else if (at === "updates") {
+      const s = await api("update");
+      if (page !== at) return;
+      renderUpdate(s);
+      if (s.state === "running") { timer = setTimeout(refresh, 2000); return; }
+    }
     else {
       const d = await api("traffic?range=" + range);
       last = d;
@@ -204,11 +210,73 @@ async function refresh() {
       if (at === "traffic") { ytData = ytData || await api("youtube"); renderTraffic(d); }
       else renderServers(d);
     }
-  } catch (_) { if ($("app").hidden) return; }
+  } catch (_) {
+    if ($("app").hidden) return;
+    if (at === "updates" && updWaiting) { timer = setTimeout(refresh, 2000); return; } // панель перезапускается
+  }
   if (!$("app").hidden) timer = setTimeout(refresh, POLL);
 }
 document.querySelectorAll(".tab[data-page]").forEach(t => { t.onclick = () => go(t.dataset.page); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("app").hidden) refresh(); });
+
+// ---------- обновления ----------
+let updInfo = null, updWaiting = false;
+function renderUpdate(s) {
+  $("upd-current").textContent = s.current;
+  $("side-version").textContent = "Версия " + s.current;
+  const running = s.state === "running";
+  updWaiting = running;
+  const run = $("upd-run");
+  run.hidden = s.state === "idle";
+  $("upd-log").textContent = s.log.join("\n");
+  $("upd-log").scrollTop = $("upd-log").scrollHeight;
+  const text = $("upd-run-text");
+  text.className = "upd-msg " + (s.state === "done" ? "ok" : s.state === "failed" ? "bad" : "");
+  if (running) {
+    $("upd-run-title").textContent = "Идёт обновление";
+    text.textContent = "Панель перезапустится и откроется сама. Страницу можно не закрывать.";
+  } else {
+    $("upd-run-title").textContent = "Последнее обновление";
+    text.textContent = s.state === "done" ? "Обновлено до версии " + s.to
+      : (s.rolledBack ? "Новая версия не заработала, вернулась прежняя. " : "Обновление не удалось. ") + cap(s.error || "");
+  }
+  $("btn-upd-check").disabled = running;
+  // уже поставленная версия: панель могла ещё не перезапуститься
+  const have = v => v === s.current || (s.state === "done" && v === s.to);
+  const can = !running && updInfo && updInfo.newer && !have(updInfo.latest);
+  $("btn-upd-start").hidden = !can;
+  if (can) $("btn-upd-start").textContent = "Обновить до " + updInfo.latest;
+  const found = $("upd-found");
+  found.hidden = !updInfo || running;
+  if (updInfo) {
+    const fresh = updInfo.newer && !have(updInfo.latest);
+    found.className = "upd-msg " + (fresh ? "" : "ok");
+    found.textContent = fresh ? "Доступна версия " + updInfo.latest : "Установлена последняя версия";
+    $("upd-notes").hidden = !fresh || !updInfo.notes || running;
+    $("upd-notes").replaceChildren(...updInfo.notes.split("\n").map(l => l.trim()).filter(Boolean)
+      .map(l => el("p", "", l.replace(/^[-*]\s+/, "• ").replace(/^#+\s*/, ""))));
+  }
+}
+function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
+$("btn-upd-check").onclick = async ev => {
+  const btn = ev.currentTarget, err = $("upd-error");
+  err.hidden = true;
+  btn.disabled = true;
+  try { updInfo = await api("update/check", { method: "POST" }); renderUpdate(await api("update")); }
+  catch (e) { err.textContent = e.message; err.hidden = false; }
+  btn.disabled = false;
+};
+$("btn-upd-start").onclick = async ev => {
+  const btn = ev.currentTarget, err = $("upd-error");
+  err.hidden = true;
+  btn.disabled = true;
+  try {
+    await api("update/start", { method: "POST", body: { tag: updInfo.tag } });
+    updWaiting = true;
+    await refresh();
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+  btn.disabled = false;
+};
 
 // ---------- пользователи ----------
 function stateOf(u) {

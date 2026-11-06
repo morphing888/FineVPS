@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const version = "0.6.0"
+const version = "0.7.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -59,6 +59,7 @@ func cmdSetPassword(args []string) {
 		log.Fatal(err)
 	}
 	path := filepath.Join(dir, "auth.json")
+	_ = os.Remove(filepath.Join(dir, "sessions.json")) // новый пароль закрывает все входы
 	old, _ := readAuth(path)
 	if err := writeAuth(path, old.User, pass); err != nil {
 		log.Fatal(err)
