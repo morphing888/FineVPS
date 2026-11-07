@@ -20,6 +20,9 @@ t "российские сайты как прежде" test "$(seen $RU_SITE)" 
 t "зарубежные сайты как прежде" test "$(seen $WORLD_SITE)" = "$EXIT_WAN"
 t "YouTube через сервер 2 при сервере имён" test "$(dns_q www.youtube.com >/dev/null; seen $YT_SITE)" = "$EXIT_WAN"
 
+fails=0
+for i in 1 2 3 4 5 6; do "${ENT[@]}" check >/dev/null 2>&1 || fails=$((fails + 1)); done
+t "проверка каскада с сервером имён проходит 6 раз из 6" test $fails -eq 0
 "${ENT[@]}" route set telegram 1 >"$W/r2.log" 2>&1; rc=$?
 t "Telegram: сеть из второго источника, домены из запасного списка" bash -c "test $rc -eq 0 && grep -qx 198.51.100.0/24 '$C/telegram.nets' && grep -qx telegram.org '$C/telegram.domains'"
 t "Telegram: про недоступный источник сказано" grep -q 'источник списков не ответил' "$W/r2.log"

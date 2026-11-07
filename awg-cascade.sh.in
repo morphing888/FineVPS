@@ -13,7 +13,7 @@
 set -euo pipefail
 umask 077
 
-VERSION="0.8.0"
+VERSION="0.8.1"
 SELF="$(readlink -f "$0")"
 BIN="/usr/local/sbin/awg-cascade"
 PANEL_BIN="/usr/local/sbin/awg-cascade-panel"
@@ -275,7 +275,7 @@ free_udp_port() {
     local p
     while :; do
         p=$(rnd 20000 60000)
-        ss -Hlun 2>/dev/null | awk '{print $4}' | grep -q ":$p\$" || { printf '%s' "$p"; return; }
+        port_busy udp "$p" || { printf '%s' "$p"; return; }
     done
 }
 
@@ -565,8 +565,9 @@ apply_routes() {
     if ip link show "$IF_UPLINK" >/dev/null 2>&1; then
         ip route replace default dev "$IF_UPLINK" table "$ROUTE_TABLE"
     fi
-    ip rule del fwmark "$MARK/$MARK" table "$ROUTE_TABLE" 2>/dev/null || true
-    ip rule add fwmark "$MARK/$MARK" table "$ROUTE_TABLE" priority "$RULE_PRIO"
+    # Правило не пересоздаётся: в промежутке между удалением и добавлением
+    # зарубежный трафик ушёл бы с российского IP.
+    has_rule || ip rule add fwmark "$MARK/$MARK" table "$ROUTE_TABLE" priority "$RULE_PRIO"
     # Тот же запасной маршрут для WARP: при его падении YouTube не уходит другим путём.
     ip rule del fwmark "$WARP_MARK/$WARP_MARK" table "$WARP_TABLE" 2>/dev/null || true
     if (( YT_WARP )); then
@@ -900,8 +901,10 @@ uplink_handshake_age() {
 }
 
 has_fresh_handshake() { local a; a=$(uplink_handshake_age) || return 1; (( a < 200 )); }
-has_rule() { ip rule show | grep -q "fwmark $MARK/$MARK lookup $ROUTE_TABLE"; }
-mark_uses_uplink() { ip -4 route get 1.1.1.1 mark "$MARK" | grep -q "dev $IF_UPLINK"; }
+# Вывод команд сохраняется целиком: при pipefail «команда | grep -q» иногда ложно падает.
+# grep выходит на первом совпадении, а ip, который пишет построчно, получает SIGPIPE.
+has_rule() { local r; r=$(ip rule show pref "$RULE_PRIO") || return 1; [[ $r == *"fwmark $MARK/$MARK lookup $ROUTE_TABLE"* ]]; }
+mark_uses_uplink() { local r; r=$(ip -4 route get 1.1.1.1 mark "$MARK" 2>/dev/null) || return 1; [[ $r == *"dev $IF_UPLINK"* ]]; }
 has_ru_list() { (( $(ru_count || echo 0) >= 1000 )); }
 has_chains() {
     "${IPT[@]}" -t mangle -C PREROUTING -j AWGC_PRE \
@@ -1352,7 +1355,7 @@ warp_conf() { # $1 адрес узла
     local f="$YT_DIR/warp/wgcf-profile.conf" priv pub addr
     priv=$(sed -n 's/^PrivateKey *= *//p' "$f")
     pub=$(sed -n 's/^PublicKey *= *//p' "$f")
-    addr=$(sed -n 's/^Address *= *//p' "$f" | tr ',' '\n' | tr -d ' ' | grep -v ':' | head -n 1)
+    addr=$(sed -n 's/^Address *= *//p' "$f" | tr ',' '\n' | tr -d ' ' | awk '!/:/ && !f {print; f = 1}')
     cat <<EOF
 [Interface]
 PrivateKey = $priv
@@ -1659,7 +1662,7 @@ free_tcp_port() {
     local p
     while :; do
         p=$(rnd 20000 60000)
-        ss -Hltn 2>/dev/null | awk '{print $4}' | grep -q ":$p\$" || { printf '%s' "$p"; return; }
+        port_busy tcp "$p" || { printf '%s' "$p"; return; }
     done
 }
 
@@ -1912,6 +1915,10 @@ chosen_services() { # номер и сервер выбранных сервис
     done < <(routes_catalog)
 }
 
+port_busy() { # протокол, порт. awk читает вывод до конца, поэтому ss не получает SIGPIPE
+    ss -Hln --"$1" 2>/dev/null | awk -v p=":$2" 'substr($4, length($4) - length(p) + 1) == p {f = 1} END {exit !f}'
+}
+
 is_net() { [[ $1 =~ ^[0-9./]+$ ]]; }
 
 valid_net() {
@@ -2046,7 +2053,7 @@ svc_refresh() { # скачать списки сервиса. Если исто�
             | grep -E '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$' \
             | awk -v yt="$YT_DOMAINS" 'BEGIN {n = split(yt, a, " ")}
                 {for (i = 1; i <= n; i++) if ($1 == a[i] || substr($1, length($1) - length(a[i])) == "." a[i]) next; print}' \
-            | sort -u | head -n 5000 >"$dir/$id.domains"
+            | sort -u | awk 'NR <= 5000' >"$dir/$id.domains"
     fi
     date +%s >"$dir/$id.time"
     if (( failed )); then
