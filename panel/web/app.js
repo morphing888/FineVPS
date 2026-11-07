@@ -946,6 +946,54 @@ function renderYoutube(y) {
       run: () => setPreset(p.id), next: nxt ? () => setPreset(nxt.id) : () => setMode("exit") }));
   });
   $("yt-presets").replaceChildren(...blocks);
+  renderSearch(y.search || { state: "idle" });
+}
+let searchAsk = false;
+function renderSearch(s) {
+  const row = el("div", "opt" + (s.state === "running" ? " active" : ""));
+  const info = el("div"), title = el("div", "opt-title");
+  title.append(document.createTextNode("Автоподбор через blockcheck2"));
+  let desc = "Проверяет десятки вариантов zapret2 против YouTube прямо с сервера 1. Занимает до 50 минут, на это время YouTube идёт с сервера 1 без обхода.";
+  if (s.state === "running") {
+    title.append(el("span", "tag brand", "Идёт подбор"));
+    const t = s.started ? new Date(s.started * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
+    desc = "Начат" + (t ? " в " + t : "") + ". Страницу можно закрыть. Пока идёт подбор, не обновляй программу: обновление его прервёт.";
+  } else if (s.state === "done" && s.result === "found") {
+    title.append(el("span", "tag on", "Найден способ"));
+    desc = "Он появился выше в группе «Подбор» → «Подобранный на этом сервере». Включи его и проверь видео.";
+  } else if (s.state === "done" && s.result === "nobypass") {
+    title.append(el("span", "tag on", "Обход не нужен"));
+    desc = "YouTube с этого сервера открывается без обхода. Выбери «С сервера 1 без обхода».";
+  } else if (s.state === "done") {
+    title.append(el("span", "tag warn", "Не найден"));
+    desc = "Рабочий способ не нашёлся. Попробуй способы из списка выше или «Через сервер 2».";
+  } else if (s.state === "failed") {
+    title.append(el("span", "tag warn", "Прервался"));
+    desc = "Подбор не закончился, например из-за перезагрузки или обновления. Можно запустить снова.";
+  }
+  info.append(title, el("div", "opt-desc", desc));
+  const side = el("div", "opt-side");
+  if (s.state !== "running") {
+    if (!searchAsk) {
+      const b = el("button", "small", s.state === "idle" ? "Запустить подбор" : "Подобрать заново");
+      b.type = "button";
+      b.onclick = () => { searchAsk = true; renderSearch(s); };
+      side.append(b);
+    } else {
+      info.append(el("div", "opt-desc search-warn", "На время подбора YouTube пойдёт без обхода, видео может тормозить. Запустить?"));
+      side.append(ytBtn("Да, запустить", async () => {
+        searchAsk = false;
+        await api("youtube/search", { method: "POST" });
+        toast("Подбор запущен, займёт до 50 минут");
+      }));
+      const no = el("button", "small", "Отмена");
+      no.type = "button";
+      no.onclick = () => { searchAsk = false; renderSearch(s); };
+      side.append(no);
+    }
+  }
+  row.append(info, side);
+  $("yt-search").replaceChildren(row);
 }
 
 $("btn-check").onclick = async ev => {

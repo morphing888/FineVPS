@@ -203,6 +203,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /youtube/mode", a.auth(a.youtubeMode))
 	api.HandleFunc("POST /youtube/preset", a.auth(a.youtubePreset))
 	api.HandleFunc("POST /youtube/mark", a.auth(a.youtubeMark))
+	api.HandleFunc("POST /youtube/search", a.auth(func(w http.ResponseWriter, r *http.Request) { a.cliOK(w, r, "youtube-test") }))
 	api.HandleFunc("GET /routes", a.auth(a.routes))
 	api.HandleFunc("POST /routes/service", a.auth(a.routeService))
 	api.HandleFunc("POST /routes/rule", a.auth(a.routeAdd))

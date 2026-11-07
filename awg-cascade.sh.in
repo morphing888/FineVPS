@@ -13,7 +13,7 @@
 set -euo pipefail
 umask 077
 
-VERSION="0.8.1"
+VERSION="0.8.2"
 SELF="$(readlink -f "$0")"
 BIN="/usr/local/sbin/awg-cascade"
 PANEL_BIN="/usr/local/sbin/awg-cascade-panel"
@@ -1465,7 +1465,10 @@ yt_json() {
     if [[ -s $YT_DIR/found.strategy ]]; then
         printf ',{"id":"found","group":"Подбор","name":"Подобранный на этом сервере","desc":"Найден проверкой blockcheck2","mark":"%s"}' "$(preset_mark found)"
     fi
-    printf ']}\n'
+    local res="" started=0
+    if [[ -s $YT_DIR/result ]]; then res=$(cat "$YT_DIR/result"); fi
+    if [[ -s $YT_DIR/test.started ]]; then started=$(cat "$YT_DIR/test.started"); fi
+    printf '],"search":{"state":"%s","result":"%s","started":%d}}\n' "$(yt_search_state)" "$res" "$started"
 }
 
 cmd_youtube() {
@@ -1530,16 +1533,31 @@ yt_test_run() {
     zapret_install
     local was=$YOUTUBE_MODE
     if [[ $was == bypass ]]; then yt_set_mode direct >/dev/null; fi
-    (
+    if [[ -n ${AWGC_BLOCKCHECK_LOG:-} ]]; then # стенд: готовый журнал вместо настоящей проверки
+        sleep 2
+        cp "$AWGC_BLOCKCHECK_LOG" "$YT_DIR/blockcheck.log"
+    else (
         cd "$ZAPRET_DIR"
         BATCH=1 TEST=standard FWTYPE=nftables IPVS=4 SCANLEVEL=quick REPEATS=2 PARALLEL=0 \
         ENABLE_HTTP=0 ENABLE_HTTPS_TLS12=1 ENABLE_HTTPS_TLS13=1 ENABLE_HTTP3=0 \
         DOMAINS="www.youtube.com redirector.googlevideo.com i.ytimg.com" \
         timeout 3000 sh ./blockcheck2.sh
     ) >"$YT_DIR/blockcheck.log" 2>&1 || true
+    fi
     parse_blockcheck "$YT_DIR/blockcheck.log"
     if [[ $was == bypass ]]; then yt_set_mode bypass >/dev/null; fi
     printf 'done\n' >"$YT_DIR/test.state"
+}
+
+yt_test_active() {
+    if [[ $NO_SYSTEMD == 1 ]]; then pgrep -f 'youtube-test --run' >/dev/null 2>&1; else systemctl is-active --quiet awg-cascade-yttest.service; fi
+}
+
+yt_search_state() { # idle, running, done или failed. Подбор, прерванный перезагрузкой, считается неудачным
+    local st=idle
+    if [[ -s $YT_DIR/test.state ]]; then st=$(cat "$YT_DIR/test.state"); fi
+    if [[ $st == running ]] && ! yt_test_active; then st=failed; fi
+    printf '%s' "$st"
 }
 
 cmd_youtube_test() {
@@ -1548,11 +1566,17 @@ cmd_youtube_test() {
         --run) yt_test_run; return ;;
         --parse) mkdir -p "$YT_DIR"; parse_blockcheck "$2"; return ;;
     esac
-    if pgrep -f 'blockcheck2?\.sh' >/dev/null 2>&1; then die "подбор уже идёт"; fi
+    if yt_test_active || pgrep -f 'blockcheck2?\.sh' >/dev/null 2>&1; then die "подбор уже идёт"; fi
     mkdir -p "$YT_DIR"
-    rm -f "$YT_DIR/result"
+    : >"$YT_DIR/result"
     printf 'running\n' >"$YT_DIR/test.state"
-    systemd-run --quiet --unit=awg-cascade-yttest --collect "$BIN" youtube-test --run
+    date +%s >"$YT_DIR/test.started"
+    if [[ $NO_SYSTEMD == 1 ]]; then
+        setsid "$BIN" youtube-test --run >/dev/null 2>&1 </dev/null &
+    else
+        systemctl reset-failed awg-cascade-yttest.service >/dev/null 2>&1 || true
+        systemd-run --quiet --unit=awg-cascade-yttest --collect "$BIN" youtube-test --run
+    fi
     say "Подбор запущен и может занять больше часа. Закрывать окно можно."
     say "Найденный способ появится в списке панели. Журнал: $YT_DIR/blockcheck.log"
 }

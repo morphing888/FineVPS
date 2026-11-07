@@ -302,4 +302,4 @@ dialog h2 { font-size: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
   .route-row .pills { display: grid; grid-template-columns: repeat(3, 1fr); }
   .route-row .pills button { padding: 8px 4px; white-space: nowrap; }
 }
-
+.search-warn { color: var(--warn); margin-top: 4px; }

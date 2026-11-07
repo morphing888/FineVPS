@@ -99,6 +99,8 @@ in_ns exit /usr/sbin/sshd -p 22 -h "$W/host" -o PermitRootLogin=yes -o PidFile="
 
 export AWGC_NO_QUEUE=1 # в ядре стенда нет очередей nfqueue
 export AWGC_YT_DEFAULT=exit # прежние проверки начинают с YouTube через сервер 2
+export AWGC_BLOCKCHECK_LOG=$W/bc-sample.log # готовый журнал вместо настоящего blockcheck2
+printf '* COVERAGE\n3/3 : curl_test_https_tls13 ipv4 : nfqws2 --payload=tls_client_hello --lua-desync=multisplit:pos=2\n\nblockcheck optimizes test sequence.\n' >"$W/bc-sample.log"
 export AWGC_STATE=/etc/awg-test/state AWGC_AWG_DIR=/etc/awg-test/awg AWGC_SKIP_PACKAGES=1 AWGC_NO_SYSTEMD=1
 export AWGC_RU_URLS="file://$W/ru.zone"
 # Источники списков сервисов: RIPEstat и v2fly. Не все файлы есть: так проверяется отказ источника.

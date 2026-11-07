@@ -43,6 +43,15 @@ cp "$AWGC_STATE/youtube/found.strategy" "$W/strategy.keep"
 "${ENT[@]}" youtube-test --parse "$W/bc2.log"
 t "обход не нужен: определено" test "$(cat "$AWGC_STATE/youtube/result")" = nobypass
 cp "$W/strategy.keep" "$AWGC_STATE/youtube/found.strategy"
+"${ENT[@]}" youtube-test >/dev/null 2>&1; rc=$?
+t "подбор запускается в фоне" bash -c "test $rc -eq 0 && '$BIN' youtube json | grep -q '\"state\":\"running\"'"
+t "второй подбор не запускается" bash -c "! ip netns exec entry '$BIN' youtube-test >/dev/null 2>&1"
+for i in $(seq 20); do "$BIN" youtube json | grep -q '"state":"running"' || break; sleep 0.5; done
+t "подбор закончился, способ найден" bash -c "'$BIN' youtube json | grep -q '\"search\":{\"state\":\"done\",\"result\":\"found\"'"
+t "найденный способ записан" grep -q 'multisplit:pos=2' "$AWGC_STATE/youtube/found.strategy"
+printf 'running\n' >"$AWGC_STATE/youtube/test.state"
+t "подбор без процесса считается прерванным" bash -c "'$BIN' youtube json | grep -q '\"state\":\"failed\"'"
+cp "$W/strategy.keep" "$AWGC_STATE/youtube/found.strategy"
 mkdir -p "$ZAPRET_DIR_T"
 t "список способов: не меньше восьми" test "$("${ENT[@]}" youtube list | wc -l)" -ge 8
 t "неизвестный способ отклонён" bash -c "! '$BIN' youtube preset p99 >/dev/null 2>&1"

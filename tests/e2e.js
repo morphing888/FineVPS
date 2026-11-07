@@ -208,6 +208,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await opt("Через сервер 2").getByText("Сейчас включено").waitFor({ timeout: 15000 });
   });
 
+  await t("автоподбор: предупреждение и запуск", async () => {
+    await pg.locator("#yt-search").getByRole("button", { name: /подбор/ }).click();
+    assert.match(await pg.textContent("#yt-search"), /без обхода/);
+    await pg.locator("#yt-search").getByRole("button", { name: "Отмена" }).click();
+    await pg.locator("#yt-search").getByRole("button", { name: /подбор/ }).click();
+    await pg.locator("#yt-search").getByRole("button", { name: "Да, запустить" }).click();
+    await pg.waitForFunction(() => /Найден способ/.test(document.getElementById("yt-search").textContent), null, { timeout: 30000 });
+    await pg.locator("#yt-presets .opt", { hasText: "Подобранный на этом сервере" }).waitFor();
+  });
   await pg.click('.tab[data-page="routes"]');
   const svc = n => pg.locator(".route-row", { hasText: n });
   await t("маршруты: каталог сервисов", async () => {

@@ -48,6 +48,7 @@ func TestRoutesAPI(t *testing.T) {
 		}
 	}
 	ok := []struct{ path, body string }{
+		{"/secret/api/youtube/search", ``},
 		{"/secret/api/routes/service", `{"id":"steam","target":"1"}`},
 		{"/secret/api/routes/service", `{"id":"steam","target":"auto"}`},
 		{"/secret/api/routes/rule", `{"value":" HTTPS://Example.com/Path ","target":"2"}`},
@@ -66,7 +67,7 @@ func TestRoutesAPI(t *testing.T) {
 		t.Fatalf("проверка: %d", c)
 	}
 	args, _ := os.ReadFile(seen)
-	want := "route json\nroute set steam 1\nroute set steam auto\nroute add https://example.com/path 2\nroute update\nroute del x\nroute check steampowered.com\n"
+	want := "route json\nyoutube-test\nroute set steam 1\nroute set steam auto\nroute add https://example.com/path 2\nroute update\nroute del x\nroute check steampowered.com\n"
 	if string(args) != want {
 		t.Fatalf("команды:\n%s", args)
 	}
