@@ -1229,7 +1229,7 @@ async function saveTelegram(patch) {
   };
   const res = await api("telegram/apply", {
     method: "POST",
-    body: JSON.stringify(cfg)
+    body: cfg
   });
   renderTelegram(res);
   return res;
