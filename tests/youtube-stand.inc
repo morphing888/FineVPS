@@ -52,6 +52,11 @@ t "найденный способ записан" grep -q 'multisplit:pos=2' "$
 printf 'running\n' >"$AWGC_STATE/youtube/test.state"
 t "подбор без процесса считается прерванным" bash -c "'$BIN' youtube json | grep -q '\"state\":\"failed\"'"
 cp "$W/strategy.keep" "$AWGC_STATE/youtube/found.strategy"
+AWGC_AUTO_MOCK="p2,p5" "${ENT[@]}" youtube-auto >/dev/null 2>&1; rc=$?
+t "быстрый автоподбор запускается в фоне" bash -c "test $rc -eq 0 && '$BIN' youtube json | grep -q '\"auto\":.*\"state\":\"running\"'"
+t "второй быстрый автоподбор не запускается" bash -c "! ip netns exec entry '$BIN' youtube-auto >/dev/null 2>&1"
+for i in $(seq 30); do "$BIN" youtube json | grep -q '"auto":.*"state":"running"' || break; sleep 0.5; done
+t "быстрый автоподбор завершился и подобрал способ" bash -c "'$BIN' youtube json | grep -q '\"auto\":.*\"state\":\"done\",\"result\":\"found\",\"best\":\"p2\"'"
 mkdir -p "$ZAPRET_DIR_T"
 t "список способов: не меньше восьми" test "$("${ENT[@]}" youtube list | wc -l)" -ge 8
 t "неизвестный способ отклонён" bash -c "! '$BIN' youtube preset p99 >/dev/null 2>&1"

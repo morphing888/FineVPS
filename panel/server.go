@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"awgcascade/panel/tgproxy"
 )
 
 //go:embed web
@@ -129,12 +131,17 @@ type App struct {
 	cliMu    sync.Mutex
 	setupMu  sync.Mutex
 	job      setupJob
+	tg       *tgproxy.Service
 }
 
 func NewApp(cfg Config, col *Collector) (*App, error) {
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		return nil, err
+	}
+	tgSvc := tgproxy.NewService(cfg.State, cfg.Host)
+	if err := tgSvc.Start(); err != nil {
+		log.Printf("telegram proxy start error: %v", err)
 	}
 	return &App{
 		cfg:      cfg,
@@ -144,6 +151,7 @@ func NewApp(cfg Config, col *Collector) (*App, error) {
 		sessPath: filepath.Join(cfg.State, "panel", "sessions.json"),
 		fails:    map[string]*failInfo{},
 		static:   http.FileServer(http.FS(sub)),
+		tg:       tgSvc,
 	}, nil
 }
 
@@ -203,6 +211,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /youtube/mode", a.auth(a.youtubeMode))
 	api.HandleFunc("POST /youtube/preset", a.auth(a.youtubePreset))
 	api.HandleFunc("POST /youtube/mark", a.auth(a.youtubeMark))
+	api.HandleFunc("POST /youtube/auto", a.auth(func(w http.ResponseWriter, r *http.Request) { a.cliOK(w, r, "youtube-auto") }))
 	api.HandleFunc("POST /youtube/search", a.auth(func(w http.ResponseWriter, r *http.Request) { a.cliOK(w, r, "youtube-test") }))
 	api.HandleFunc("GET /routes", a.auth(a.routes))
 	api.HandleFunc("POST /routes/service", a.auth(a.routeService))
@@ -210,6 +219,10 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /routes/rule/delete", a.auth(a.routeDel))
 	api.HandleFunc("POST /routes/update", a.auth(a.routeUpdate))
 	api.HandleFunc("POST /routes/check", a.auth(a.routeCheck))
+	api.HandleFunc("GET /telegram", a.auth(a.telegramGet))
+	api.HandleFunc("GET /telegram/qr.svg", a.auth(a.telegramQR))
+	api.HandleFunc("POST /telegram/apply", a.auth(a.telegramApply))
+	api.HandleFunc("POST /telegram/secret", a.auth(a.telegramNewSecret))
 
 	apiPrefix := a.cfg.Base + "/api"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -616,6 +629,81 @@ func (a *App) youtubeMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (a *App) telegramGet(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	writeJSON(w, a.tg.GetStatus(r.Host))
+}
+
+func (a *App) telegramQR(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	kind := r.URL.Query().Get("type")
+	st := a.tg.GetStatus(r.Host)
+	text := st.MTProtoLink
+	if kind == "web" {
+		text = st.WebLink
+	}
+	if text == "" {
+		writeErr(w, http.StatusBadRequest, "Ссылка не сформирована")
+		return
+	}
+	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "2", "-o", "-")
+	cmd.Stdin = strings.NewReader(text)
+	out, err := cmd.Output()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "Не удалось создать QR-код")
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	_, _ = w.Write(out)
+}
+
+func (a *App) telegramApply(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	var cfg tgproxy.Config
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeErr(w, http.StatusBadRequest, "Неверные параметры: "+err.Error())
+		return
+	}
+	if err := a.tg.Apply(cfg); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = a.runCLI(ctx, "routing")
+	}()
+	writeJSON(w, a.tg.GetStatus(r.Host))
+}
+
+func (a *App) telegramNewSecret(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	sec, err := a.tg.NewSecret()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"secret": sec})
+}
+
+func (a *App) Close() {
+	if a.tg != nil {
+		a.tg.Stop()
+	}
 }
 
 func loadOrCreateCert(dir, host string) (tls.Certificate, error) {

@@ -182,14 +182,14 @@ $("logout-m").onclick = logout;
 // ---------- навигация ----------
 function stopPoll() { clearTimeout(timer); timer = null; }
 function go(name) {
-  if (!["users", "traffic", "servers", "youtube", "routes", "updates"].includes(name)) name = "traffic";
+  if (!["users", "traffic", "servers", "youtube", "routes", "updates", "telegram"].includes(name)) name = "traffic";
   page = name;
   history.replaceState(null, "", "#" + name);
   document.querySelectorAll(".tab[data-page]").forEach(t => {
     if (t.dataset.page === name) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
   });
   document.querySelectorAll(".page").forEach(p => { p.hidden = p.id !== "page-" + name; });
-  if (["servers", "updates"].includes(name)) $("more-tab").setAttribute("aria-current", "page"); else $("more-tab").removeAttribute("aria-current");
+  if (["servers", "updates", "telegram"].includes(name)) $("more-tab").setAttribute("aria-current", "page"); else $("more-tab").removeAttribute("aria-current");
   closeSheet();
   refresh();
 }
@@ -198,11 +198,25 @@ async function refresh() {
   const at = page;
   try {
     if (at === "users") renderUsers(await api("users"));
-    else if (at === "youtube") renderYoutube(await api("youtube"));
+    else if (at === "youtube") {
+      const y = await api("youtube");
+      if (page !== at) return;
+      renderYoutube(y);
+      if ((y.auto && y.auto.state === "running") || (y.search && y.search.state === "running")) {
+        timer = setTimeout(refresh, 1500);
+        return;
+      }
+    }
     else if (at === "routes") {
       const d = await api("routes");
       if (page === at) renderRoutes(d);
       return; // страница не обновляется сама: на ней вводят адреса
+    }
+    else if (at === "telegram") {
+      const t = await api("telegram");
+      if (page !== at) return;
+      renderTelegram(t);
+      if (t.enabled) { timer = setTimeout(refresh, 3000); return; }
     }
     else if (at === "updates") {
       const s = await api("update");
@@ -461,6 +475,8 @@ function openQR(name) {
   $("qr-img").src = "api/users/" + enc + "/qr.svg";
   $("qr-file").href = "api/users/" + enc + "/conf";
   $("qr-file").setAttribute("download", name + ".conf");
+  $("qr-file").style.display = "";
+  $("qr-dialog").querySelector(".hint").textContent = "Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.";
   $("qr-dialog").showModal();
 }
 $("qr-close").onclick = () => $("qr-dialog").close();
@@ -933,6 +949,7 @@ function renderYoutube(y) {
     optRow({ name: "Через сервер 2", desc: "Самый надёжный вариант. Российский сервер не участвует в обходе.", active: y.mode === "exit", run: () => setMode("exit") }),
     optRow({ name: "С сервера 1 без обхода", desc: "YouTube идёт напрямую. Подойдёт, если хостер его не замедляет.", active: y.mode === "direct", mark: y.directMark, markId: "direct", run: () => setMode("direct"), next: () => setPreset(y.presets[0].id) }),
   );
+  renderAuto(y.auto || { state: "idle", items: [] }, y);
   const blocks = [];
   let box = null, head = null;
   y.presets.forEach((p, i) => {
@@ -947,6 +964,75 @@ function renderYoutube(y) {
   });
   $("yt-presets").replaceChildren(...blocks);
   renderSearch(y.search || { state: "idle" });
+}
+let autoShowDetails = false;
+function renderAuto(a, y) {
+  const box = $("yt-auto");
+  if (!box) return;
+  const row = el("div", "opt" + (a.state === "running" ? " active" : ""));
+  const info = el("div"), title = el("div", "opt-title");
+  title.append(document.createTextNode("Автоподбор стратегии (быстрый)"));
+  let desc = "За 1–2 минуты проверяет все готовые стратегии (tpws, zapret2 nfqws2, ByeDPI) на соединениях к YouTube и Google Video и сразу включает лучшую по отклику.";
+  if (a.state === "running") {
+    const pct = a.total > 0 ? Math.round((a.current / a.total) * 100) : 0;
+    title.append(el("span", "tag brand", `Проверка ${a.current || 1} из ${a.total || 16}`));
+    desc = (a.currentName ? `Сейчас проверяется: «${a.currentName}» (${a.currentId}). ` : "Подготовка к проверке... ") + "Страницу можно не закрывать — результаты обновляются на ходу.";
+    const bar = el("div", "meter-bar auto-bar"), fill = el("i", "");
+    fill.style.width = Math.max(4, pct) + "%";
+    bar.append(fill);
+    info.append(title, el("div", "opt-desc", desc), bar);
+  } else {
+    if (a.state === "done" && a.result === "found") {
+      title.append(el("span", "tag on", "Подобрана: " + (a.bestName || a.best)));
+      desc = `Лучшая стратегия «${a.bestName || a.best}» автоматически включена и отмечена «Помогло». Если длинное видео всё же буферизуется, выбери другую из прошедших проверку ниже.`;
+    } else if (a.state === "done" && a.result === "nobypass") {
+      title.append(el("span", "tag on", "Обход не нужен"));
+      desc = "Сервер 1 открывает YouTube и Google Video напрямую без замедления. Включён режим «С сервера 1 без обхода».";
+    } else if (a.state === "done") {
+      title.append(el("span", "tag warn", "Стратегия не найдена"));
+      desc = "Ни один из быстрых способов не дал стабильного ответа от серверов YouTube. Рекомендуется режим «Через сервер 2» или глубокий подбор blockcheck2.";
+    } else if (a.state === "failed") {
+      title.append(el("span", "tag warn", "Прервался"));
+      desc = "Автоподбор был прерван. Можно запустить его заново.";
+    }
+    info.append(title, el("div", "opt-desc", desc));
+  }
+  const side = el("div", "opt-side");
+  if (a.state !== "running") {
+    if (Array.isArray(a.items) && a.items.length > 0) {
+      const toggle = el("button", "small ghost", autoShowDetails ? "Скрыть отчёт" : `Отчёт (${a.items.filter(x => x.status === "ok").length}/${a.items.length})`);
+      toggle.type = "button";
+      toggle.onclick = () => { autoShowDetails = !autoShowDetails; renderAuto(a, y); };
+      side.append(toggle);
+    }
+    side.append(ytBtn(a.state === "idle" ? "Подобрать автоматически" : "Проверить заново", async () => {
+      autoShowDetails = true;
+      await api("youtube/auto", { method: "POST" });
+      toast("Быстрый автоподбор запущен (1–2 мин)");
+    }));
+  }
+  row.append(info, side);
+  const kids = [row];
+  if (Array.isArray(a.items) && a.items.length > 0 && (a.state === "running" || autoShowDetails)) {
+    const list = el("div", "auto-items");
+    a.items.forEach(it => {
+      const item = el("div", "auto-item");
+      const left = el("div", "auto-item-left");
+      const badge = el("span", "tag " + (it.status === "ok" ? "on" : "off"), it.status === "ok" ? `${it.ms} мс` : "Сбой");
+      left.append(badge, el("strong", "", it.name), el("span", "dim", it.group));
+      const right = el("div", "auto-item-right");
+      const isActive = (it.id === "direct" && y.mode === "direct") || (it.id !== "direct" && y.mode === "bypass" && y.preset === it.id);
+      if (isActive) {
+        right.append(el("span", "tag brand", "Активно"));
+      } else if (a.state !== "running" && it.status === "ok") {
+        right.append(ytBtn("Включить", () => it.id === "direct" ? setMode("direct") : setPreset(it.id)));
+      }
+      item.append(left, right);
+      list.append(item);
+    });
+    kids.push(list);
+  }
+  box.replaceChildren(...kids);
 }
 let searchAsk = false;
 function renderSearch(s) {
@@ -1038,3 +1124,138 @@ $("pass-form").onsubmit = async ev => {
   if (!h.admin) { showSetup(setupToken ? "admin-form" : "setup-wait"); return; }
   await enter();
 })().catch(() => {});
+
+// ---------- telegram ----------
+let tgData = null;
+let tgUpstream = "direct";
+
+function renderTelegram(t) {
+  tgData = t;
+  const isEditing = document.activeElement && [
+    $("tg-port"), $("tg-tls-domain"), $("tg-secret"), $("tg-web-domain"), $("tg-web-port")
+  ].includes(document.activeElement);
+
+  const tag = $("tg-status-tag");
+  if (t.running) {
+    tag.textContent = "Работает";
+    tag.className = "tag on";
+  } else if (t.enabled) {
+    tag.textContent = "Запуск...";
+    tag.className = "tag warn";
+  } else {
+    tag.textContent = "Отключен";
+    tag.className = "tag off";
+  }
+
+  const webTag = $("tg-web-status-tag");
+  if (t.web_running) {
+    webTag.textContent = "Работает";
+    webTag.className = "tag on";
+  } else if (t.web_enabled && t.enabled) {
+    webTag.textContent = "Запуск...";
+    webTag.className = "tag warn";
+  } else {
+    webTag.textContent = "Отключен";
+    webTag.className = "tag off";
+  }
+
+  $("tg-conn").textContent = t.connections || 0;
+
+  if (!isEditing) {
+    $("tg-enabled").checked = !!t.enabled;
+    $("tg-port").value = t.port || 8443;
+    $("tg-tls-domain").value = t.tls_domain || "ya.ru";
+    $("tg-secret").value = t.secret || "";
+    $("tg-web-enabled").checked = !!t.web_enabled;
+    $("tg-web-domain").value = t.web_domain || "";
+    $("tg-web-port").value = t.web_port || 8085;
+    setUpstreamPills(t.upstream || "direct");
+  }
+
+  const cbox = $("tg-connect-box");
+  if (t.enabled && t.mtproto_link) {
+    cbox.hidden = false;
+    $("tg-app-link").href = t.mtproto_link;
+    $("tg-preview-link").textContent = t.mtproto_link;
+  } else {
+    cbox.hidden = true;
+  }
+
+  const wbox = $("tg-web-connect-box");
+  if (t.enabled && t.web_enabled && t.web_link) {
+    wbox.hidden = false;
+    $("tg-web-preview").textContent = t.web_link;
+  } else {
+    wbox.hidden = true;
+  }
+}
+
+function setUpstreamPills(up) {
+  tgUpstream = up;
+  $("tg-up-direct").setAttribute("aria-pressed", String(up !== "cascade"));
+  $("tg-up-cascade").setAttribute("aria-pressed", String(up === "cascade"));
+}
+
+$("tg-up-direct").onclick = () => setUpstreamPills("direct");
+$("tg-up-cascade").onclick = () => setUpstreamPills("cascade");
+
+$("tg-new-secret").onclick = async () => {
+  try {
+    const res = await api("telegram/secret", { method: "POST" });
+    if (res && res.secret) {
+      $("tg-secret").value = res.secret;
+      toast("Сгенерирован новый секрет");
+    }
+  } catch (err) {
+    toast("Ошибка генерации секрета: " + err.message);
+  }
+};
+
+$("tg-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const cfg = {
+    enabled: $("tg-enabled").checked,
+    port: parseInt($("tg-port").value, 10) || 8443,
+    tls_domain: $("tg-tls-domain").value.trim() || "ya.ru",
+    secret: $("tg-secret").value.trim().toLowerCase(),
+    upstream: tgUpstream,
+    web_enabled: $("tg-web-enabled").checked,
+    web_domain: $("tg-web-domain").value.trim(),
+    web_port: parseInt($("tg-web-port").value, 10) || 8085
+  };
+  try {
+    const res = await api("telegram/apply", {
+      method: "POST",
+      body: JSON.stringify(cfg)
+    });
+    renderTelegram(res);
+    toast("Настройки Telegram сохранены");
+  } catch (err) {
+    toast("Ошибка сохранения: " + err.message);
+  }
+};
+
+$("tg-copy-link").onclick = () => {
+  if (tgData && tgData.mtproto_link) {
+    navigator.clipboard.writeText(tgData.mtproto_link);
+    toast("Ссылка скопирована в буфер");
+  }
+};
+
+$("tg-web-copy").onclick = () => {
+  if (tgData && tgData.web_link) {
+    navigator.clipboard.writeText(tgData.web_link);
+    toast("Веб-ссылка скопирована");
+  }
+};
+
+function openTelegramQR(title, type) {
+  $("qr-title").textContent = title;
+  $("qr-img").src = "api/telegram/qr.svg?type=" + type;
+  $("qr-file").style.display = "none";
+  $("qr-dialog").querySelector(".hint").textContent = "Отсканируй QR-код камерой телефона или в Telegram для подключения к прокси.";
+  $("qr-dialog").showModal();
+}
+
+$("tg-qr-link").onclick = () => openTelegramQR("MTProto Proxy", "mtproto");
+$("tg-web-qr").onclick = () => openTelegramQR("Telegram Web / CDN Proxy", "web");
