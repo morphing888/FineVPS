@@ -1467,8 +1467,7 @@ tools_install() {
             warn "не удалось скачать wgcf для WARP"
         fi
     fi
-    rm -rf /opt/awg-cascade
-    rm -rf "$STATE/telegram"/dl
+    rm -rf "$dl"
 }
 
 yt_json() {
