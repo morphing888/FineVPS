@@ -308,3 +308,11 @@ dialog h2 { font-size: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .auto-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; border-radius: var(--r-field); background: rgb(255 255 255 / .02); font-size: 13.5px; }
 .auto-item-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .auto-item-right { display: flex; align-items: center; gap: 6px; flex: none; }
+
+.tg-card { display: flex; flex-direction: column; }
+.tg-card form { flex: 1; display: flex; flex-direction: column; }
+.tg-foot { margin-top: auto; padding-top: 18px; display: flex; justify-content: space-between; align-items: center; }
+.tg-connect-card { background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field); padding: 10px 12px; margin-bottom: 14px; }
+.tg-connect-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.tg-link-input { font-family: monospace; font-size: 12px; color: var(--brand-ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 10px; width: 100%; cursor: text; }
+.tg-link-input:focus { border-color: var(--brand); outline: none; }

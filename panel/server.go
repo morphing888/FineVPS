@@ -692,12 +692,12 @@ func (a *App) telegramNewSecret(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
 		return
 	}
-	sec, err := a.tg.NewSecret()
+	_, err := a.tg.NewSecret()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"secret": sec})
+	writeJSON(w, a.tg.GetStatus(r.Host))
 }
 
 func (a *App) Close() {

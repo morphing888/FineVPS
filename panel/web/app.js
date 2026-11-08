@@ -1259,9 +1259,9 @@ $("tg-web-toggle-btn").onclick = async () => {
 
 $("tg-new-secret").onclick = async () => {
   try {
-    const res = await api("telegram/secret", { method: "POST" });
-    if (res && res.secret) {
-      $("tg-secret").value = res.secret;
+    const st = await api("telegram/secret", { method: "POST" });
+    if (st && st.secret) {
+      renderTelegram(st);
       toast("Сгенерирован новый секрет");
     }
   } catch (err) {
