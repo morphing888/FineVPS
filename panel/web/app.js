@@ -998,7 +998,21 @@ function renderAuto(a, y) {
     info.append(title, el("div", "opt-desc", desc));
   }
   const side = el("div", "opt-side");
-  if (a.state !== "running") {
+  if (a.state === "running") {
+    const stopBtn = el("button", "small danger", "Остановить");
+    stopBtn.type = "button";
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      try {
+        await api("youtube/stop", { method: "POST" });
+        toast("Автоподбор остановлен");
+        renderAuto({ ...a, state: "failed" }, y);
+      } catch (err) {
+        toast("Ошибка остановки: " + err.message);
+      }
+    };
+    side.append(stopBtn);
+  } else {
     if (Array.isArray(a.items) && a.items.length > 0) {
       const toggle = el("button", "small ghost", autoShowDetails ? "Скрыть отчёт" : `Отчёт (${a.items.filter(x => x.status === "ok").length}/${a.items.length})`);
       toggle.type = "button";
@@ -1059,7 +1073,21 @@ function renderSearch(s) {
   }
   info.append(title, el("div", "opt-desc", desc));
   const side = el("div", "opt-side");
-  if (s.state !== "running") {
+  if (s.state === "running") {
+    const stopBtn = el("button", "small danger", "Остановить");
+    stopBtn.type = "button";
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      try {
+        await api("youtube/stop", { method: "POST" });
+        toast("Подбор остановлен");
+        renderSearch({ ...s, state: "failed" });
+      } catch (err) {
+        toast("Ошибка остановки: " + err.message);
+      }
+    };
+    side.append(stopBtn);
+  } else {
     if (!searchAsk) {
       const b = el("button", "small", s.state === "idle" ? "Запустить подбор" : "Подобрать заново");
       b.type = "button";

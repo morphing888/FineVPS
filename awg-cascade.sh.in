@@ -1808,6 +1808,22 @@ cmd_youtube_auto() {
     say "Быстрый автоподбор стратегии запущен (займёт около 1–2 минут)."
 }
 
+cmd_youtube_stop() {
+    need_root; need_entry
+    if [[ $NO_SYSTEMD != 1 ]]; then
+        systemctl stop awg-cascade-yttest.service 2>/dev/null || true
+        systemctl stop awg-cascade-ytauto.service 2>/dev/null || true
+    fi
+    pkill -9 -f 'blockcheck2?\.sh' 2>/dev/null || true
+    pkill -9 -f 'youtube-auto --run' 2>/dev/null || true
+    pkill -9 -f 'youtube-test --run' 2>/dev/null || true
+    if [[ -d $YT_DIR ]]; then
+        printf 'failed\n' >"$YT_DIR/auto.state"
+        printf 'failed\n' >"$YT_DIR/test.state"
+    fi
+    say "Подбор остановлен"
+}
+
 # ---------- прокси Telegram (MTProto + Web/CDN) ----------
 
 cmd_telegram() {
@@ -2770,6 +2786,7 @@ awg-cascade $VERSION: каскад AmneziaWG на двух серверах
   youtube preset ИМЯ      включить способ обхода, например p1
   youtube-auto            быстрый автоподбор стратегии обхода (1–2 мин)
   youtube-test            долгий автоподбор способа
+  youtube-stop            остановить текущий автоподбор
   telegram [status]       состояние Telegram proxy (MTProto + Web/CDN)
   telegram enable|disable включить или отключить Telegram proxy
   panel-install [ФАЙЛ]    установить или обновить панель
@@ -2805,6 +2822,7 @@ main() {
         youtube)    cmd_youtube "$@" ;;
         youtube-auto) cmd_youtube_auto "$@" ;;
         youtube-test) cmd_youtube_test "$@" ;;
+        youtube-stop) cmd_youtube_stop ;;
         telegram)   cmd_telegram "$@" ;;
         panel-install)  cmd_panel_install "$@" ;;
         panel-password) cmd_panel_password ;;
