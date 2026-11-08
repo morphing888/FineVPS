@@ -1135,56 +1135,72 @@ function renderTelegram(t) {
     $("tg-port"), $("tg-tls-domain"), $("tg-secret"), $("tg-web-domain"), $("tg-web-port")
   ].includes(document.activeElement);
 
+  // MTProto Header Tag & Toggle Button
   const tag = $("tg-status-tag");
+  const toggleBtn = $("tg-toggle-btn");
   if (t.running) {
     tag.textContent = "Работает";
     tag.className = "tag on";
+    toggleBtn.textContent = "Отключить";
+    toggleBtn.className = "small danger";
   } else if (t.enabled) {
     tag.textContent = "Запуск...";
     tag.className = "tag warn";
+    toggleBtn.textContent = "Отключить";
+    toggleBtn.className = "small danger";
   } else {
     tag.textContent = "Отключен";
     tag.className = "tag off";
+    toggleBtn.textContent = "Включить";
+    toggleBtn.className = "small";
   }
 
+  // Web Header Tag & Toggle Button
   const webTag = $("tg-web-status-tag");
+  const webToggleBtn = $("tg-web-toggle-btn");
   if (t.web_running) {
     webTag.textContent = "Работает";
     webTag.className = "tag on";
+    webToggleBtn.textContent = "Отключить";
+    webToggleBtn.className = "small danger";
   } else if (t.web_enabled && t.enabled) {
     webTag.textContent = "Запуск...";
     webTag.className = "tag warn";
+    webToggleBtn.textContent = "Отключить";
+    webToggleBtn.className = "small danger";
   } else {
     webTag.textContent = "Отключен";
     webTag.className = "tag off";
+    webToggleBtn.textContent = "Включить";
+    webToggleBtn.className = "small";
   }
 
   $("tg-conn").textContent = t.connections || 0;
 
   if (!isEditing) {
-    $("tg-enabled").checked = !!t.enabled;
     $("tg-port").value = t.port || 8443;
     $("tg-tls-domain").value = t.tls_domain || "ya.ru";
     $("tg-secret").value = t.secret || "";
-    $("tg-web-enabled").checked = !!t.web_enabled;
     $("tg-web-domain").value = t.web_domain || "";
     $("tg-web-port").value = t.web_port || 8085;
     setUpstreamPills(t.upstream || "direct");
   }
 
+  // Connect box
   const cbox = $("tg-connect-box");
   if (t.enabled && t.mtproto_link) {
     cbox.hidden = false;
     $("tg-app-link").href = t.mtproto_link;
-    $("tg-preview-link").textContent = t.mtproto_link;
+    $("tg-preview-link").value = t.mtproto_link;
   } else {
     cbox.hidden = true;
   }
 
+  // Web connect box
   const wbox = $("tg-web-connect-box");
   if (t.enabled && t.web_enabled && t.web_link) {
     wbox.hidden = false;
-    $("tg-web-preview").textContent = t.web_link;
+    $("tg-web-preview").value = t.web_link;
   } else {
     wbox.hidden = true;
   }
@@ -1199,6 +1215,48 @@ function setUpstreamPills(up) {
 $("tg-up-direct").onclick = () => setUpstreamPills("direct");
 $("tg-up-cascade").onclick = () => setUpstreamPills("cascade");
 
+async function saveTelegram(patch) {
+  const current = tgData || {};
+  const cfg = {
+    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
+    port: parseInt($("tg-port").value, 10) || current.port || 8443,
+    tls_domain: $("tg-tls-domain").value.trim() || current.tls_domain || "ya.ru",
+    secret: $("tg-secret").value.trim().toLowerCase() || current.secret || "",
+    upstream: tgUpstream,
+    web_enabled: patch.web_enabled !== undefined ? patch.web_enabled : current.web_enabled,
+    web_domain: $("tg-web-domain").value.trim(),
+    web_port: parseInt($("tg-web-port").value, 10) || current.web_port || 8085
+  };
+  const res = await api("telegram/apply", {
+    method: "POST",
+    body: JSON.stringify(cfg)
+  });
+  renderTelegram(res);
+  return res;
+}
+
+$("tg-toggle-btn").onclick = async () => {
+  if (!tgData) return;
+  const newEnabled = !tgData.enabled;
+  try {
+    await saveTelegram({ enabled: newEnabled });
+    toast(newEnabled ? "MTProto Proxy включен" : "MTProto Proxy отключен");
+  } catch (err) {
+    toast("Ошибка: " + err.message);
+  }
+};
+
+$("tg-web-toggle-btn").onclick = async () => {
+  if (!tgData) return;
+  const newWeb = !tgData.web_enabled;
+  try {
+    await saveTelegram({ web_enabled: newWeb });
+    toast(newWeb ? "Web / CDN мост включен" : "Web / CDN мост отключен");
+  } catch (err) {
+    toast("Ошибка: " + err.message);
+  }
+};
+
 $("tg-new-secret").onclick = async () => {
   try {
     const res = await api("telegram/secret", { method: "POST" });
@@ -1207,29 +1265,25 @@ $("tg-new-secret").onclick = async () => {
       toast("Сгенерирован новый секрет");
     }
   } catch (err) {
-    toast("Ошибка генерации секрета: " + err.message);
+    toast("Ошибка генерации: " + err.message);
   }
 };
 
 $("tg-form").onsubmit = async (ev) => {
   ev.preventDefault();
-  const cfg = {
-    enabled: $("tg-enabled").checked,
-    port: parseInt($("tg-port").value, 10) || 8443,
-    tls_domain: $("tg-tls-domain").value.trim() || "ya.ru",
-    secret: $("tg-secret").value.trim().toLowerCase(),
-    upstream: tgUpstream,
-    web_enabled: $("tg-web-enabled").checked,
-    web_domain: $("tg-web-domain").value.trim(),
-    web_port: parseInt($("tg-web-port").value, 10) || 8085
-  };
   try {
-    const res = await api("telegram/apply", {
-      method: "POST",
-      body: JSON.stringify(cfg)
-    });
-    renderTelegram(res);
-    toast("Настройки Telegram сохранены");
+    await saveTelegram({});
+    toast("Настройки MTProto сохранены");
+  } catch (err) {
+    toast("Ошибка сохранения: " + err.message);
+  }
+};
+
+$("tg-web-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    await saveTelegram({});
+    toast("Настройки Web / CDN сохранены");
   } catch (err) {
     toast("Ошибка сохранения: " + err.message);
   }
@@ -1238,7 +1292,7 @@ $("tg-form").onsubmit = async (ev) => {
 $("tg-copy-link").onclick = () => {
   if (tgData && tgData.mtproto_link) {
     navigator.clipboard.writeText(tgData.mtproto_link);
-    toast("Ссылка скопирована в буфер");
+    toast("Ссылка скопирована");
   }
 };
 

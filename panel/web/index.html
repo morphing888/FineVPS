@@ -299,115 +299,110 @@
     <!-- Telegram Proxy -->
     <section id="page-telegram" class="page" hidden>
       <h1>Telegram</h1>
-      <p class="page-note">Встроенный быстрый прокси Telegram на базе библиотеки mtg с Fake-TLS и поддержкой Web Proxy / CDN. Позволяет подключаться к Telegram без VPN на телефонах и компьютерах.</p>
+      <p class="lead">Встроенный быстрый прокси на базе библиотеки mtg с Fake-TLS и поддержкой Web/CDN моста для официальных клиентов Telegram.</p>
 
       <div class="grid">
         <!-- MTProto Proxy Card -->
-        <section class="card col-7">
+        <section class="card col-6">
           <div class="card-head">
             <div>
               <h2>MTProto Proxy</h2>
-              <p class="dim">Прокси с маскировкой Fake-TLS для официальных клиентов Telegram</p>
+              <p class="hint">Быстрый прокси с маскировкой Fake-TLS</p>
             </div>
-            <span id="tg-status-tag" class="tag off">Отключен</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span id="tg-status-tag" class="tag off">Отключен</span>
+              <button id="tg-toggle-btn" class="small" type="button">Включить</button>
+            </div>
           </div>
 
-          <form id="tg-form" class="tg-form" style="margin-top: 14px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding: 10px 14px; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field);">
-              <div>
-                <strong style="display: block; font-size: 14px;">Включить MTProto Proxy</strong>
-                <span class="dim">Принимать входящие подключения</span>
-              </div>
-              <input id="tg-enabled" type="checkbox" style="width: 20px; height: 20px; accent-color: var(--brand); cursor: pointer;">
+          <div id="tg-connect-box" style="margin-top: 14px; padding-bottom: 16px; border-bottom: 1px solid var(--line);" hidden>
+            <div class="buttons" style="margin: 0 0 10px;">
+              <a id="tg-app-link" class="button primary" href="#" target="_blank">Подключить в Telegram</a>
+              <button id="tg-copy-link" type="button">Копировать</button>
+              <button id="tg-qr-link" type="button">QR-код</button>
             </div>
+            <div class="check-row">
+              <input id="tg-preview-link" readonly style="font-family: monospace; font-size: 12px; color: var(--soft);" aria-label="Ссылка MTProto">
+            </div>
+          </div>
 
-            <div class="grid" style="gap: 10px; margin-bottom: 12px;">
-              <div class="col-6">
+          <form id="tg-form" class="tg-form" style="margin-top: 16px;">
+            <div class="grid" style="gap: 12px; margin-bottom: 12px;">
+              <div class="col-5">
                 <label for="tg-port">Внешний порт</label>
                 <input id="tg-port" type="number" min="1" max="65535" value="8443" required>
               </div>
-              <div class="col-6">
+              <div class="col-7">
                 <label for="tg-tls-domain">Домен Fake-TLS</label>
                 <input id="tg-tls-domain" placeholder="ya.ru" autocapitalize="none" autocomplete="off" spellcheck="false" required>
               </div>
             </div>
 
-            <label for="tg-secret">Секрет (32 шестнадцатеричных символа)</label>
-            <div style="display: flex; gap: 8px; margin-bottom: 14px;">
+            <label for="tg-secret">Секрет (32 hex-символа)</label>
+            <div class="check-row" style="margin-bottom: 14px;">
               <input id="tg-secret" style="font-family: monospace; font-size: 13px;" required minlength="32" maxlength="32">
-              <button id="tg-new-secret" class="small" type="button" style="white-space: nowrap;">Новый</button>
+              <button id="tg-new-secret" class="small" type="button" style="white-space: nowrap;">Случайный</button>
             </div>
 
             <label>Маршрут к дата-центрам Telegram</label>
             <div class="pills" role="group" aria-label="Маршрут к Telegram">
-              <button type="button" id="tg-up-direct" data-upstream="direct" aria-pressed="true">Напрямую с сервера 1</button>
-              <button type="button" id="tg-up-cascade" data-upstream="cascade" aria-pressed="false">Через сервер 2 (каскад)</button>
+              <button type="button" id="tg-up-direct" data-upstream="direct" aria-pressed="true">Напрямую (сервер 1)</button>
+              <button type="button" id="tg-up-cascade" data-upstream="cascade" aria-pressed="false">Через каскад (сервер 2)</button>
             </div>
-            <p class="dim" style="margin-top: -6px; margin-bottom: 14px;">Если провайдер блокирует серверы Telegram, включи «Через сервер 2» — трафик к серверам Telegram пойдёт через зарубежный сервер.</p>
+            <p class="hint">«Через каскад» спасает, если российский провайдер глушит IP дата-центров Telegram.</p>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
-              <span class="dim">Активных подключений: <b id="tg-conn" style="color: var(--ink);">0</b></span>
+              <span class="dim">Подключений сейчас: <b id="tg-conn" style="color: var(--ink);">0</b></span>
+              <button class="primary" type="submit">Сохранить</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Web Proxy / CDN Card -->
+        <section class="card col-6">
+          <div class="card-head">
+            <div>
+              <h2>Telegram Web / CDN</h2>
+              <p class="hint">Веб-мост через Cloudflare или Selectel CDN</p>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span id="tg-web-status-tag" class="tag off">Отключен</span>
+              <button id="tg-web-toggle-btn" class="small" type="button">Включить</button>
+            </div>
+          </div>
+
+          <div id="tg-web-connect-box" style="margin-top: 14px; padding-bottom: 16px; border-bottom: 1px solid var(--line);" hidden>
+            <label>Веб-ссылка моста</label>
+            <div class="check-row" style="margin-bottom: 6px;">
+              <input id="tg-web-preview" readonly style="font-family: monospace; font-size: 12px; color: var(--brand-ink);" aria-label="Веб-ссылка моста">
+              <button id="tg-web-copy" class="small" type="button">Копировать</button>
+              <button id="tg-web-qr" class="small" type="button">QR-код</button>
+            </div>
+          </div>
+
+          <form id="tg-web-form" style="margin-top: 16px;">
+            <div class="grid" style="gap: 12px; margin-bottom: 12px;">
+              <div class="col-8">
+                <label for="tg-web-domain">Публичный домен CDN</label>
+                <input id="tg-web-domain" placeholder="tg.example.com" autocapitalize="none" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="col-4">
+                <label for="tg-web-port">Порт моста</label>
+                <input id="tg-web-port" type="number" min="1" max="65535" value="8085">
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
               <button class="primary" type="submit">Сохранить</button>
             </div>
           </form>
 
-          <div id="tg-connect-box" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);" hidden>
-            <h3 style="font-size: 14px; margin: 0 0 10px;">Быстрое подключение</h3>
-            <div class="buttons" style="margin-bottom: 12px;">
-              <a id="tg-app-link" class="button primary" href="#" target="_blank">Подключить в Telegram</a>
-              <button id="tg-copy-link" type="button">Копировать ссылку</button>
-              <button id="tg-qr-link" type="button">QR-код</button>
-            </div>
-            <code id="tg-preview-link" style="display: block; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field); padding: 8px 12px; font-size: 12px; word-break: break-all; color: var(--soft);"></code>
-          </div>
-        </section>
-
-        <!-- Web Proxy / CDN Card -->
-        <section class="card col-5">
-          <div class="card-head">
-            <div>
-              <h2>Telegram Web / CDN</h2>
-              <p class="dim">Веб-прокси через Cloudflare или CDN по HTTPS</p>
-            </div>
-            <span id="tg-web-status-tag" class="tag off">Отключен</span>
-          </div>
-
-          <div style="margin-top: 14px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding: 10px 14px; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field);">
-              <div>
-                <strong style="display: block; font-size: 14px;">Веб-мост (Web Bridge)</strong>
-                <span class="dim">Подключение через CDN WebSocket</span>
-              </div>
-              <input id="tg-web-enabled" type="checkbox" style="width: 20px; height: 20px; accent-color: var(--brand); cursor: pointer;">
-            </div>
-
-            <div style="margin-bottom: 12px;">
-              <label for="tg-web-domain">Публичный домен CDN</label>
-              <input id="tg-web-domain" placeholder="tg.example.com" autocapitalize="none" autocomplete="off" spellcheck="false">
-              <span class="dim" style="display: block; margin-top: 4px;">Домен с проксированием в Cloudflare / Selectel CDN</span>
-            </div>
-
-            <div style="margin-bottom: 14px;">
-              <label for="tg-web-port">Порт веб-прокси на сервере</label>
-              <input id="tg-web-port" type="number" min="1" max="65535" value="8085">
-            </div>
-
-            <div id="tg-web-connect-box" style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);" hidden>
-              <label>Веб-ссылка с токеном моста</label>
-              <code id="tg-web-preview" style="display: block; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-field); padding: 8px 12px; font-size: 12px; word-break: break-all; color: var(--brand-ink); margin-bottom: 10px;"></code>
-              <div class="buttons">
-                <button id="tg-web-copy" class="small" type="button">Копировать</button>
-                <button id="tg-web-qr" class="small" type="button">QR-код</button>
-              </div>
-            </div>
-
-            <p class="hint" style="margin-top: 18px; line-height: 1.5;">
-              <b>Как работает CDN-прокси:</b> создай поддомен в Cloudflare (с оранжевым облаком) или Selectel CDN, укажи его здесь, и направь порт на IP твоего сервера. Клиент подключается по зашифрованному HTTPS WebSocket, скрывая реальный IP сервера.
-            </p>
-          </div>
+          <p class="note" style="margin-top: 20px;">
+            <b>Как работает CDN-мост:</b> создай поддомен в Cloudflare (с оранжевым облаком) или Selectel CDN, укажи его здесь, и направь порт на IP сервера. Запросы пойдут по защищённому WebSocket через всемирную сеть CDN, полностью скрывая адрес сервера.
+          </p>
         </section>
       </div>
-    </section>
+    </section>    </section>
 
     <!-- Обновления -->
     <section id="page-updates" class="page" hidden>
