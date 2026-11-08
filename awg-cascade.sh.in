@@ -494,6 +494,7 @@ own_chain() { # own_chain ТАБЛИЦА ЦЕПОЧКА РОДИТЕЛЬ
 
 apply_firewall() {
     local net
+    local tg_on=${TG_ON:-0} tg_port=${TG_PORT:-8443} tg_web_on=${TG_WEB_ON:-0} tg_web_port=${TG_WEB_PORT:-8085}
     own_chain filter AWGC_INPUT INPUT
     "${IPT[@]}" -A AWGC_INPUT -p udp --dport "$ENTRY_PORT" -j ACCEPT
     if [[ -n $PANEL_PORT ]]; then
@@ -506,10 +507,10 @@ apply_firewall() {
     if (( YT_PROXY )); then
         "${IPT[@]}" -A AWGC_INPUT -i "$IF_CLIENTS" -p tcp --dport "$PROXY_PORT" -j ACCEPT
     fi
-    if (( TG_ON )); then
-        "${IPT[@]}" -A AWGC_INPUT -p tcp --dport "$TG_PORT" -j ACCEPT
-        if (( TG_WEB_ON )); then
-            "${IPT[@]}" -A AWGC_INPUT -p tcp --dport "$TG_WEB_PORT" -j ACCEPT
+    if (( tg_on )); then
+        "${IPT[@]}" -A AWGC_INPUT -p tcp --dport "$tg_port" -j ACCEPT
+        if (( tg_web_on )); then
+            "${IPT[@]}" -A AWGC_INPUT -p tcp --dport "$tg_web_port" -j ACCEPT
         fi
     fi
 
@@ -1820,10 +1821,7 @@ cmd_telegram() {
         local key="$1" def="$2"
         if [[ ! -f "$tg_cfg" ]]; then printf '%s\n' "$def"; return; fi
         local val
-        val=$(grep -o ""$key":[[:space:]]*"[^"]*"" "$tg_cfg" | sed -E "s/"$key":[[:space:]]*"([^"]*)"/\1/")
-        if [[ -z "$val" ]]; then
-            val=$(grep -o ""$key":[[:space:]]*[0-9a-zA-Z]*" "$tg_cfg" | sed -E "s/"$key":[[:space:]]*([0-9a-zA-Z]*)/\1/")
-        fi
+        val=$(awk -v k="$key" -F':' '$0 ~ "\"" k "\"" {gsub(/[", ]/, "", $2); print $2; exit}' "$tg_cfg")
         printf '%s\n' "${val:-$def}"
     }
 
@@ -1843,7 +1841,7 @@ cmd_telegram() {
                 say "MTProto Proxy: включен (порт $port, Fake-TLS $dom, маршрут: $up)"
                 if [[ -n "$sec" && -n "$ENTRY_IP" ]]; then
                     local hexdom fullsec
-                    hexdom=$(printf '%s' "$dom" | xxd -p 2>/dev/null || printf '%s' "$dom" | od -An -tx1 | tr -d ' \n')
+                    hexdom=$(printf '%s' "$dom" | od -An -tx1 | tr -d ' \t\r\n')
                     fullsec="ee${sec}${hexdom}"
                     say "Ссылка для Telegram: tg://proxy?server=$ENTRY_IP&port=$port&secret=$fullsec"
                 fi
@@ -1859,7 +1857,7 @@ cmd_telegram() {
         enable)
             if [[ ! -f "$tg_cfg" ]]; then
                 local rnd_sec
-                rnd_sec=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom | tr -d ' \n')
+                rnd_sec=$(od -vN 16 -An -tx1 /dev/urandom | tr -d ' \t\r\n')
                 cat <<EOF > "$tg_cfg"
 {
   "enabled": true,
