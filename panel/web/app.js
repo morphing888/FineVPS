@@ -611,16 +611,41 @@ async function switchQRTab(tab) {
     } else {
       img.hidden = true;
       emptyCard.hidden = false;
-      emptyTitle.textContent = "MTProto прокси отключен";
-      emptyDesc.textContent = curQRTGInfo.mtproto
-        ? "MTProto выключен в общих настройках сервера."
-        : "MTProto выключен для этого пользователя. Включи его в настройках Telegram пользователя.";
-      emptyAction.hidden = false;
-      emptyAction.textContent = curQRTGInfo.mtproto ? "Настройки Telegram" : "Настроить пользователя";
-      emptyAction.onclick = () => {
-        $("qr-dialog").close();
-        if (curQRTGInfo.mtproto) go("telegram"); else openTGUser(curQRUser);
-      };
+      if (!curQRTGInfo.mtproto) {
+        emptyTitle.textContent = "MTProto прокси отключен";
+        emptyDesc.textContent = "MTProto выключен для этого пользователя.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small primary";
+        emptyAction.textContent = "Включить";
+        emptyAction.onclick = async () => {
+          emptyAction.disabled = true;
+          try {
+            await api("users/" + enc + "/telegram", {
+              method: "POST",
+              body: { mtproto: true, web: curQRTGInfo.web, secret: curQRTGInfo.secret }
+            });
+            curQRTGInfo.mtproto = true;
+            toast("MTProto Proxy включен для " + curQRUser);
+            refresh(true);
+            curQRTGInfo = null;
+            await switchQRTab("tg");
+          } catch (e) {
+            toast("Ошибка: " + e.message);
+          } finally {
+            emptyAction.disabled = false;
+          }
+        };
+      } else {
+        emptyTitle.textContent = "MTProto отключен на сервере";
+        emptyDesc.textContent = "MTProto выключен в основных настройках Telegram.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small";
+        emptyAction.textContent = "Настройки Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      }
       hint.hidden = true;
       linkBox.hidden = true;
       tgConnect.hidden = true;
@@ -646,18 +671,34 @@ async function switchQRTab(tab) {
       img.hidden = true;
       emptyCard.hidden = false;
       if (!curQRTGInfo.web) {
-        emptyTitle.textContent = "Web-мост отключен для пользователя";
-        emptyDesc.textContent = "Доступ к Web / CDN мосту отключен для этого пользователя.";
+        emptyTitle.textContent = "Web-мост отключен";
+        emptyDesc.textContent = "Доступ к Web / CDN мосту выключен для этого пользователя.";
         emptyAction.hidden = false;
-        emptyAction.textContent = "Включить для пользователя";
-        emptyAction.onclick = () => {
-          $("qr-dialog").close();
-          openTGUser(curQRUser);
+        emptyAction.className = "small primary";
+        emptyAction.textContent = "Включить";
+        emptyAction.onclick = async () => {
+          emptyAction.disabled = true;
+          try {
+            await api("users/" + enc + "/telegram", {
+              method: "POST",
+              body: { mtproto: curQRTGInfo.mtproto, web: true, secret: curQRTGInfo.secret }
+            });
+            curQRTGInfo.web = true;
+            toast("Web мост включен для " + curQRUser);
+            refresh(true);
+            curQRTGInfo = null;
+            await switchQRTab("web");
+          } catch (e) {
+            toast("Ошибка: " + e.message);
+          } finally {
+            emptyAction.disabled = false;
+          }
         };
       } else if (!curQRTGInfo.web_domain_configured) {
         emptyTitle.textContent = "Домен CDN не настроен";
         emptyDesc.textContent = "Чтобы веб-мост заработал, укажи публичный домен CDN в разделе Telegram (например, tg.example.com).";
         emptyAction.hidden = false;
+        emptyAction.className = "small";
         emptyAction.textContent = "Настроить домен в Telegram";
         emptyAction.onclick = () => {
           $("qr-dialog").close();
@@ -667,6 +708,7 @@ async function switchQRTab(tab) {
         emptyTitle.textContent = "Веб-мост не активен";
         emptyDesc.textContent = "Включи Web / CDN мост в разделе Telegram.";
         emptyAction.hidden = false;
+        emptyAction.className = "small";
         emptyAction.textContent = "Открыть настройки Telegram";
         emptyAction.onclick = () => {
           $("qr-dialog").close();
