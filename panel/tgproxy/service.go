@@ -365,7 +365,10 @@ func (s *Service) normalizeAndValidateConfigLocked(newCfg Config) (Config, error
 
 // commitWithRollbackLocked executes a transactional disk+runtime update:
 // 1. Captures exact raw bytes of targetPath on disk (distinguishing missing vs I/O error) and s.config.
-// 2. Applies disk mutation (write or remove).
+// 2. Applies disk mutation (write or remove). Because a disk write/remove may return an error AFTER
+//    changing the file on disk (e.g. parent directory fsync error after os.Rename or os.Remove),
+//    any mutation error immediately attempts to restore the disk snapshot before returning, and never
+//    applies runtime changes. If snapshot restoration fails, ErrRecoveryRequired is returned and latched.
 // 3. Applies runtime configuration if active (or if forceApply is true).
 // 4. On runtime failure, restores disk snapshot and previous runtime state; if either rollback step
 //    fails, sets s.recoveryRequired and returns an error wrapping ErrRecoveryRequired.
@@ -382,14 +385,34 @@ func (s *Service) commitWithRollbackLocked(targetPath string, newBytes []byte, i
 
 	oldCfg := s.config
 
+	restoreDiskSnapshot := func() error {
+		if existed {
+			return s.writeFileLocked(targetPath, oldRaw, 0o600)
+		}
+		if rmErr := s.removeFileLocked(targetPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return rmErr
+		}
+		return nil
+	}
+
+	var mutErr error
 	if isDelete {
 		if err := s.removeFileLocked(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("delete %s: %w", targetPath, err)
+			mutErr = fmt.Errorf("delete %s: %w", targetPath, err)
 		}
 	} else {
 		if err := s.writeFileLocked(targetPath, newBytes, 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", targetPath, err)
+			mutErr = fmt.Errorf("write %s: %w", targetPath, err)
 		}
+	}
+	if mutErr != nil {
+		if rbDiskErr := restoreDiskSnapshot(); rbDiskErr != nil {
+			recErr := errors.Join(ErrRecoveryRequired, mutErr, rbDiskErr)
+			s.recoveryRequired = true
+			s.lastRecoveryErr = recErr
+			return recErr
+		}
+		return mutErr
 	}
 
 	s.config = candidateCfg
@@ -397,14 +420,7 @@ func (s *Service) commitWithRollbackLocked(targetPath string, newBytes []byte, i
 	shouldApply := forceApply || candidateCfg.Enabled || candidateCfg.WebEnabled || oldCfg.Enabled || oldCfg.WebEnabled
 	if shouldApply {
 		if applyErr := s.runApplyLocked(candidateCfg); applyErr != nil {
-			var rbDiskErr error
-			if existed {
-				rbDiskErr = s.writeFileLocked(targetPath, oldRaw, 0o600)
-			} else {
-				if rmErr := s.removeFileLocked(targetPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-					rbDiskErr = rmErr
-				}
-			}
+			rbDiskErr := restoreDiskSnapshot()
 
 			s.config = oldCfg
 			var rbRuntimeErr error

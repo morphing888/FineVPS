@@ -132,6 +132,7 @@ type Session struct {
 	notify                chan struct{}
 	budgetNotify          chan struct{}
 	done                  chan struct{}
+	finishDone            chan struct{}
 	carrierLanes          map[uint32]*carrierLane
 	finishOnce            sync.Once
 	backendWG             sync.WaitGroup
@@ -160,6 +161,7 @@ func newSession(options sessionOptions) *Session {
 		notify:                make(chan struct{}, 1),
 		budgetNotify:          make(chan struct{}),
 		done:                  make(chan struct{}),
+		finishDone:            make(chan struct{}),
 		carrierLanes:          make(map[uint32]*carrierLane),
 		onFinished:            options.onFinished,
 		acquireStream:         options.acquireStream,
@@ -704,6 +706,7 @@ func (s *Session) Close() {
 
 func (s *Session) wait() {
 	s.backendWG.Wait()
+	<-s.finishDone
 }
 
 func (s *Session) onlyLateFrames(values []frame.Frame) bool {
@@ -1445,7 +1448,12 @@ func (s *Session) closeLocked() {
 	signal(s.notify)
 	s.finishOnce.Do(func() {
 		if s.onFinished != nil {
-			go s.onFinished(s)
+			go func() {
+				defer close(s.finishDone)
+				s.onFinished(s)
+			}()
+		} else {
+			close(s.finishDone)
 		}
 	})
 }

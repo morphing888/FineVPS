@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -522,7 +523,7 @@ func loadProfiles(path, host, basePath string, limits Limits) ([]Profile, error)
 	extraPermissions := info.Mode().Perm() & 0077
 	credentialReadOnly := isSystemdCredential(path) &&
 		extraPermissions&0033 == 0
-	if extraPermissions != 0 && !credentialReadOnly {
+	if runtime.GOOS != "windows" && extraPermissions != 0 && !credentialReadOnly {
 		return nil, errors.New("profiles_file must not be readable or writable by group or others")
 	}
 	input, err := os.ReadFile(path)

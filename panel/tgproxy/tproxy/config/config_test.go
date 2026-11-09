@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -217,6 +218,9 @@ func TestProfileLimitsCannotExceedGlobalCeilings(t *testing.T) {
 }
 
 func TestLoadAcceptsSystemdCredentialReadPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
 	directory := t.TempDir()
 	public := filepath.Join(directory, "public")
 	if err := os.Mkdir(public, 0700); err != nil {
@@ -263,7 +267,7 @@ func TestCarrierBatchMustFitDesktopLoopbackCap(t *testing.T) {
 	}
 	write := func(batch, body int) string {
 		path := filepath.Join(directory, "config.json")
-		content := `{"public_hostname":"proxy.example.com","public_dir":"` + directory + `","profiles_file":"` + profiles + `","limits":{"carrier_batch_bytes":` + strconv.Itoa(batch) + `,"max_body_bytes":` + strconv.Itoa(body) + `}}`
+		content := `{"public_hostname":"proxy.example.com","public_dir":` + strconv.Quote(directory) + `,"profiles_file":` + strconv.Quote(profiles) + `,"limits":{"carrier_batch_bytes":` + strconv.Itoa(batch) + `,"max_body_bytes":` + strconv.Itoa(body) + `}}`
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}

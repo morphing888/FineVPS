@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -1097,5 +1098,171 @@ func TestEvictedLaneReleasesBudgetAndIgnoresLateFrames(t *testing.T) {
 	value.mu.Unlock()
 	if closed {
 		t.Fatal("late DATA for an evicted lane closed the session")
+	}
+}
+
+func TestConcurrentUpdateProfilesRevokesInFlightBootstrapAndReplay(t *testing.T) {
+	configuration := testConfig("127.0.0.1:1")
+	configuration.Limits.MaxBootstrapsGlobal = 512
+	configuration.Limits.NewBootstrapsBurst = 512
+	configuration.Limits.NewBootstrapsPerMinute = 60000
+	configuration.Limits.MaxSessionsGlobal = 128
+	configuration.Limits.NewSessionsBurst = 128
+	configuration.Limits.NewSessionsPerMinute = 60000
+
+	aliceSecret, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f")
+	bobSecret, _ := hex.DecodeString("101112131415161718191a1b1c1d1e1f")
+	aliceProf := config.Profile{
+		Name:       "alice",
+		Backend:    "127.0.0.1:1",
+		Capability: config.DeriveCapability("proxy.example.com", "", aliceSecret),
+	}
+	bobProf := config.Profile{
+		Name:       "bob",
+		Backend:    "127.0.0.1:1",
+		Capability: config.DeriveCapability("proxy.example.com", "", bobSecret),
+	}
+	configuration.Profiles = []config.Profile{aliceProf, bobProf}
+
+	manager := NewManager(configuration, [32]byte{1})
+	defer manager.Shutdown()
+
+	hello := frame.Encode(frame.Hello, 0, []byte{1})
+
+	// 1. Issue and consume a bootstrap for alice, then revoke alice via UpdateProfiles:
+	//    both her active session AND any replay of the already-used bootstrap must be rejected!
+	usedBoot, err := manager.IssueBootstrap(&aliceProf, "198.51.100.10")
+	if err != nil {
+		t.Fatalf("issue initial alice bootstrap: %v", err)
+	}
+	created, err := manager.Create(usedBoot, "198.51.100.10", hello)
+	if err != nil {
+		t.Fatalf("create initial alice session: %v", err)
+	}
+
+	// Also issue an unused bootstrap for alice before revocation
+	unusedBoot, err := manager.IssueBootstrap(&aliceProf, "198.51.100.11")
+	if err != nil {
+		t.Fatalf("issue unused alice bootstrap: %v", err)
+	}
+
+	// Deterministically test the race window where a caller matched aliceProf BEFORE UpdateProfiles,
+	// UpdateProfiles revokes alice while holding m.mu, and then IssueBootstrap tries to insert the bootstrap.
+	staleAlicePtr := manager.MatchCapability(aliceProf.Capability[:])
+	if staleAlicePtr == nil {
+		t.Fatal("expected alice capability to match before revocation")
+	}
+
+	var wg sync.WaitGroup
+	inFlightTokens := make(chan string, 64)
+	wg.Add(8)
+	for i := 0; i < 8; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 8; j++ {
+				if tok, err := manager.IssueBootstrap(staleAlicePtr, "198.51.100.12"); err == nil {
+					inFlightTokens <- tok
+				}
+			}
+		}(i)
+	}
+
+	if err := manager.UpdateProfiles([]config.Profile{bobProf}); err != nil {
+		t.Fatalf("UpdateProfiles(bob only): %v", err)
+	}
+	wg.Wait()
+	close(inFlightTokens)
+
+	// After UpdateProfiles returns:
+	// a) Calling IssueBootstrap with the stale pointer must fail with ErrAuthentication
+	if _, err := manager.IssueBootstrap(staleAlicePtr, "198.51.100.12"); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected IssueBootstrap with stale revoked profile to fail with ErrAuthentication, got %v", err)
+	}
+	// b) Unused bootstrap issued before revocation must fail Create
+	if _, err := manager.Create(unusedBoot, "198.51.100.11", hello); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected unused bootstrap of revoked profile to fail Create with ErrAuthentication, got %v", err)
+	}
+	// c) Replay of ALREADY-USED bootstrap of revoked profile must ALSO fail Create with ErrAuthentication
+	if _, err := manager.Create(usedBoot, "198.51.100.10", hello); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected replay of used bootstrap for revoked profile to fail with ErrAuthentication, got %v", err)
+	}
+	// d) Existing session token of revoked profile must be closed/revoked
+	if _, err := manager.Get(created.Token); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected revoked session token to be removed, got %v", err)
+	}
+	// e) Any bootstrap token that was issued concurrently before UpdateProfiles acquired m.mu must NOT be usable after UpdateProfiles!
+	for tok := range inFlightTokens {
+		if _, err := manager.Create(tok, "198.51.100.12", hello); !errors.Is(err, ErrAuthentication) {
+			t.Fatalf("concurrently issued bootstrap for revoked profile was accepted by Create after UpdateProfiles: %v", err)
+		}
+	}
+}
+
+func TestUpdateProfilesLimitChangeRevokesStaleProfileObjects(t *testing.T) {
+	configuration := testConfig("127.0.0.1:1")
+	secret, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f")
+	prof1 := config.Profile{
+		Name:       "alice",
+		Backend:    "127.0.0.1:1",
+		Capability: config.DeriveCapability("proxy.example.com", "", secret),
+		Limits: config.ProfileLimits{
+			MaxSessions:          4,
+			MaxStreams:           16,
+			MaxStreamsPerSession: 8,
+		},
+	}
+	configuration.Profiles = []config.Profile{prof1}
+
+	manager := NewManager(configuration, [32]byte{1})
+	defer manager.Shutdown()
+
+	hello := frame.Encode(frame.Hello, 0, []byte{1})
+
+	boot1, err := manager.IssueBootstrap(&prof1, "198.51.100.20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess1, err := manager.Create(boot1, "198.51.100.20", hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unusedBoot, err := manager.IssueBootstrap(&prof1, "198.51.100.21")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reduce MaxSessions from 4 to 1 via UpdateProfiles
+	prof2 := prof1
+	prof2.Limits.MaxSessions = 1
+	if err := manager.UpdateProfiles([]config.Profile{prof2}); err != nil {
+		t.Fatalf("UpdateProfiles with reduced limit: %v", err)
+	}
+
+	// Old session and old unused bootstrap (holding old Limits) must be revoked
+	if _, err := manager.Get(sess1.Token); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected old session with stale limits to be revoked on limit reduction, got %v", err)
+	}
+	if _, err := manager.Create(unusedBoot, "198.51.100.21", hello); !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected unused bootstrap with stale limits to be revoked on limit reduction, got %v", err)
+	}
+
+	// New bootstrap uses the new MaxSessions=1 limit
+	activeProf := manager.MatchCapability(prof2.Capability[:])
+	if activeProf == nil {
+		t.Fatal("expected updated profile to match")
+	}
+	newBoot1, err := manager.IssueBootstrap(activeProf, "198.51.100.22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create(newBoot1, "198.51.100.22", hello); err != nil {
+		t.Fatalf("expected first session under new limit to succeed: %v", err)
+	}
+	newBoot2, err := manager.IssueBootstrap(activeProf, "198.51.100.23")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create(newBoot2, "198.51.100.23", hello); !errors.Is(err, ErrLimit) {
+		t.Fatalf("expected second session under reduced MaxSessions=1 limit to fail with ErrLimit, got %v", err)
 	}
 }

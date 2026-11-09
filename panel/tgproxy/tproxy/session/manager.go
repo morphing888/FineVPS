@@ -31,6 +31,7 @@ type CreateResult struct {
 }
 
 type bootstrap struct {
+	seq          uint64
 	expires      time.Time
 	profile      *config.Profile
 	issuanceIP   string
@@ -84,15 +85,38 @@ func buildProfileSnapshot(profiles []config.Profile, globalLimits config.Limits)
 	}
 }
 
-func isProfileRetained(oldProf *config.Profile, newProfiles []config.Profile) bool {
+func matchSnapshotCapability(snap *profileSnapshot, value []byte) *config.Profile {
+	if snap == nil || len(value) != sha256.Size {
+		return nil
+	}
+	if _, ok := snap.capabilityPrefixes[capabilityPrefix(value)]; !ok {
+		return nil
+	}
+	matched := -1
+	for i := range snap.profiles {
+		equal := subtle.ConstantTimeCompare(value, snap.profiles[i].Capability[:])
+		if equal == 1 {
+			matched = i
+		}
+	}
+	if matched < 0 {
+		return nil
+	}
+	return &snap.profiles[matched]
+}
+
+func isProfileRetained(oldProf *config.Profile, newProfiles []config.Profile, globalLimits config.Limits) bool {
 	if oldProf == nil {
 		return false
 	}
+	oldMode := oldProf.CarrierMode.WithDefault()
+	oldLimits := oldProf.Limits.WithDefaults(globalLimits)
 	for i := range newProfiles {
 		p := &newProfiles[i]
 		if p.Name == oldProf.Name &&
 			p.Backend == oldProf.Backend &&
-			p.CarrierMode == oldProf.CarrierMode &&
+			p.CarrierMode.WithDefault() == oldMode &&
+			p.Limits.WithDefaults(globalLimits) == oldLimits &&
 			subtle.ConstantTimeCompare(p.Capability[:], oldProf.Capability[:]) == 1 {
 			return true
 		}
@@ -111,6 +135,7 @@ type Manager struct {
 	profilesSnap atomic.Pointer[profileSnapshot]
 
 	mu                   sync.Mutex
+	bootstrapSeq         uint64
 	bootstraps           map[[sha256.Size]byte]*bootstrap
 	bootstrapsPerIP      map[string]int
 	sessions             map[[sha256.Size]byte]*Session
@@ -196,14 +221,14 @@ func (m *Manager) UpdateProfiles(profiles []config.Profile) error {
 	m.profilesSnap.Store(snap)
 
 	for hash, b := range m.bootstraps {
-		if !b.used && !isProfileRetained(b.profile, snap.profiles) {
+		if !isProfileRetained(b.profile, snap.profiles, m.config.Limits) {
 			m.removeBootstrapLocked(hash, b)
 		}
 	}
 
 	var revoked []*Session
 	for _, s := range m.sessions {
-		if !isProfileRetained(s.profile, snap.profiles) {
+		if !isProfileRetained(s.profile, snap.profiles, m.config.Limits) {
 			revoked = append(revoked, s)
 		}
 	}
@@ -219,38 +244,16 @@ func (m *Manager) UpdateProfiles(profiles []config.Profile) error {
 }
 
 func (m *Manager) MatchCapability(value []byte) *config.Profile {
-	if len(value) != sha256.Size {
-		return nil
-	}
-	snap := m.profilesSnap.Load()
-	if snap == nil {
-		return nil
-	}
-	if _, ok := snap.capabilityPrefixes[capabilityPrefix(value)]; !ok {
-		return nil
-	}
-	matched := -1
-	for i := range snap.profiles {
-		equal := subtle.ConstantTimeCompare(value, snap.profiles[i].Capability[:])
-		if equal == 1 {
-			matched = i
-		}
-	}
-	if matched < 0 {
-		return nil
-	}
-	return &snap.profiles[matched]
+	return matchSnapshotCapability(m.profilesSnap.Load(), value)
 }
 
 func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (string, error) {
 	if profile == nil {
 		return "", ErrAuthentication
 	}
-	profile = m.MatchCapability(profile.Capability[:])
-	if profile == nil {
+	if m.MatchCapability(profile.Capability[:]) == nil {
 		return "", ErrAuthentication
 	}
-	now := time.Now()
 	token, hash, err := m.newToken(TokenBootstrap)
 	if err != nil {
 		return "", err
@@ -260,6 +263,12 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 	if m.closed {
 		return "", ErrClosed
 	}
+	snap := m.profilesSnap.Load()
+	activeProfile := matchSnapshotCapability(snap, profile.Capability[:])
+	if activeProfile == nil || !isProfileRetained(profile, snap.profiles, m.config.Limits) {
+		return "", ErrAuthentication
+	}
+	now := time.Now()
 	m.removeExpiredBootstrapsLocked(now)
 	if (m.config.Limits.MaxBootstrapsPerIP != 0 &&
 		m.bootstrapsPerIP[clientIP] >= m.config.Limits.MaxBootstrapsPerIP) || !allowRateLocked(
@@ -275,9 +284,11 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 		m.limitHits.Add(1)
 		return "", ErrLimit
 	}
+	m.bootstrapSeq++
 	m.bootstraps[hash] = &bootstrap{
+		seq:        m.bootstrapSeq,
 		expires:    now.Add(m.config.Timeouts.BootstrapLifetime.Value()),
-		profile:    profile,
+		profile:    activeProfile,
 		issuanceIP: clientIP,
 	}
 	m.bootstrapsPerIP[clientIP]++
@@ -299,6 +310,11 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 	defer m.mu.Unlock()
 	entry := m.bootstraps[tokenHash]
 	if entry == nil || now.After(entry.expires) {
+		return CreateResult{}, ErrAuthentication
+	}
+	snap := m.profilesSnap.Load()
+	if snap == nil || !isProfileRetained(entry.profile, snap.profiles, m.config.Limits) {
+		m.removeBootstrapLocked(tokenHash, entry)
 		return CreateResult{}, ErrAuthentication
 	}
 	if entry.used {
@@ -628,8 +644,16 @@ func (m *Manager) evictOldestUnusedBootstrapLocked() bool {
 	var oldestHash [sha256.Size]byte
 	var oldest *bootstrap
 	for hash, value := range m.bootstraps {
-		if value.used || (oldest != nil && !value.expires.Before(oldest.expires)) {
+		if value.used {
 			continue
+		}
+		if oldest != nil {
+			if value.expires.After(oldest.expires) {
+				continue
+			}
+			if value.expires.Equal(oldest.expires) && value.seq > oldest.seq {
+				continue
+			}
 		}
 		oldestHash = hash
 		oldest = value

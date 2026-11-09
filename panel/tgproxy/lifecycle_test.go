@@ -936,6 +936,63 @@ func TestUserServiceFaultInjectionRollback(t *testing.T) {
 		t.Fatalf("DeleteUser rollback failed: expected %s to be restored on disk, got %+v (err=%v)", validSec, infoAfterDelRollback, err)
 	}
 
+	// 5b. Remove-then-error (e.g. parent dir fsync fails AFTER os.Remove) restores snapshot without applying runtime!
+	removeFsyncErr := errors.New("injected parent fsync failure after os.Remove")
+	applyCalledOnRemoveErr := false
+	svc.removeFileHook = func(p string) error {
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+		return removeFsyncErr
+	}
+	svc.applyHook = func(cfg Config) error {
+		applyCalledOnRemoveErr = true
+		return nil
+	}
+	rmThenErr := svc.DeleteUser("alice")
+	svc.removeFileHook = nil
+	svc.applyHook = nil
+	if !errors.Is(rmThenErr, removeFsyncErr) {
+		t.Fatalf("expected DeleteUser to return removeFsyncErr, got %v", rmThenErr)
+	}
+	if applyCalledOnRemoveErr {
+		t.Fatalf("runtime apply must NOT be called when disk remove fails")
+	}
+	if rec, _ := svc.NeedsRecovery(); rec {
+		t.Fatalf("expected NeedsRecovery()=false after successful snapshot restore on remove error")
+	}
+	infoAfterRmFsyncErr, err := svc.GetUser("alice", "192.0.2.10")
+	if err != nil || infoAfterRmFsyncErr.Secret != validSec {
+		t.Fatalf("remove-then-error failed to restore alice.tg.json: got %+v (err=%v)", infoAfterRmFsyncErr, err)
+	}
+
+	// 5c. Double failure on disk mutation (write-then-error + restore snapshot fails) -> ErrRecoveryRequired without calling runtime apply!
+	writeFsyncErr := errors.New("injected parent fsync failure after rename")
+	restoreSnapshotErr := errors.New("injected snapshot restore write failure")
+	mutWriteCalls := 0
+	svc.writeFileHook = func(p string, data []byte, perm os.FileMode) error {
+		mutWriteCalls++
+		if mutWriteCalls == 1 {
+			if err := os.WriteFile(p, data, perm); err != nil {
+				return err
+			}
+			return writeFsyncErr
+		}
+		return restoreSnapshotErr
+	}
+	mutDoubleErr := svc.SetUser("alice", UserTelegramConfig{Secret: newSec, MTProto: true, Web: true})
+	svc.writeFileHook = nil
+	if !errors.Is(mutDoubleErr, ErrRecoveryRequired) || !errors.Is(mutDoubleErr, writeFsyncErr) || !errors.Is(mutDoubleErr, restoreSnapshotErr) {
+		t.Fatalf("expected write-then-error double failure to wrap ErrRecoveryRequired, writeFsyncErr, and restoreSnapshotErr; got %v", mutDoubleErr)
+	}
+	if rec, recErr := svc.NeedsRecovery(); !rec || !errors.Is(recErr, ErrRecoveryRequired) {
+		t.Fatalf("expected NeedsRecovery()=true after write-then-error double failure, got rec=%v err=%v", rec, recErr)
+	}
+	// Restore alice cleanly before testing step 6
+	if err := svc.SetUser("alice", UserTelegramConfig{Secret: validSec, MTProto: true, Web: true}); err != nil {
+		t.Fatalf("restore alice after 5c: %v", err)
+	}
+
 	// 6. Secondary rollback failure: apply fails AND disk rollback write fails -> must return ErrRecoveryRequired and set NeedsRecovery()
 	rollbackWriteErr := errors.New("simulated disk failure during rollback")
 	writeCalls := 0

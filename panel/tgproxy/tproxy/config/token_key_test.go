@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -23,6 +24,9 @@ func TestTokenKeyRequiresPrivatePersistentFile(t *testing.T) {
 		if size == 32 && !bytes.Equal(key[:], bytes.Repeat([]byte{7}, 32)) {
 			t.Fatal("key changed while reading")
 		}
+	}
+	if runtime.GOOS == "windows" {
+		return
 	}
 	if err := os.Chmod(path, 0640); err != nil {
 		t.Fatal(err)
