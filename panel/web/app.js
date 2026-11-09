@@ -445,6 +445,25 @@ function copyText(text, msg = "Скопировано") {
   toast(msg);
 }
 
+async function toggleUserTG(u, proto) {
+  const enc = encodeURIComponent(u.name);
+  const newMtproto = proto === "tg" ? !u.tgMtproto : u.tgMtproto;
+  const newWeb = proto === "web" ? !u.tgWeb : u.tgWeb;
+  try {
+    const info = await api("users/" + enc + "/telegram");
+    await api("users/" + enc + "/telegram", {
+      method: "POST",
+      body: { mtproto: newMtproto, web: newWeb, secret: info.secret }
+    });
+    u.tgMtproto = newMtproto;
+    u.tgWeb = newWeb;
+    toast((proto === "tg" ? "MTProto Proxy " : "Web мост ") + ((proto === "tg" ? newMtproto : newWeb) ? "включен" : "отключен") + " для " + u.name);
+    refresh();
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+}
+
 function renderUsers(list) {
   const box = $("users-list");
   if (document.querySelector("#users-list button:focus")) return; // не сбивать фокус при обновлении
@@ -457,12 +476,20 @@ function renderUsers(list) {
     const row = el("div", "user");
     const a = el("div");
     a.append(el("span", "user-name", u.name), el("span", "user-ip", u.ip));
-    if (u.tgMtproto || u.tgWeb) {
-      const tgTags = el("span", "user-tg-tags");
-      if (u.tgMtproto) tgTags.append(el("span", "user-tg-tag active", "TG"));
-      if (u.tgWeb) tgTags.append(el("span", "user-tg-tag active", "Web"));
-      a.append(tgTags);
-    }
+
+    const tgCol = el("div", "user-tg-col");
+    const btnTG = el("button", "tag-btn " + (u.tgMtproto ? "on" : "off"), "TG");
+    btnTG.type = "button";
+    btnTG.title = "MTProto Proxy: " + (u.tgMtproto ? "включен" : "отключен") + " (нажми для переключения)";
+    btnTG.onclick = () => toggleUserTG(u, "tg");
+
+    const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off"), "WEB");
+    btnWeb.type = "button";
+    btnWeb.title = "Web / CDN мост: " + (u.tgWeb ? "включен" : "отключен") + " (нажми для переключения)";
+    btnWeb.onclick = () => toggleUserTG(u, "web");
+
+    tgCol.append(btnTG, btnWeb);
+
     const [cls, text] = stateOf(u);
     const st = el("div");
     st.append(el("span", "tag " + cls, text));
@@ -472,10 +499,10 @@ function renderUsers(list) {
     tot.append(el("span", "cap", "За месяц"), el("span", "", bytes(u.monthDown + u.monthUp)));
     const act = el("div", "actions");
     act.append(btn("QR-код", () => openQR(u.name, "wg")));
-    act.append(btn("Telegram", () => openTGUser(u.name)));
+    act.append(btn("Секрет", () => openSecretDialog(u.name)));
     act.append(btn(u.enabled ? "Отключить" : "Включить", () => toggle(u)));
     act.append(btn("Удалить", () => remove(u)));
-    row.append(a, st, sp, tot, act);
+    row.append(a, tgCol, st, sp, tot, act);
     root.append(row);
   }
   box.replaceChildren(root);
@@ -656,98 +683,40 @@ $("qr-tab-tg").onclick = () => switchQRTab("tg");
 $("qr-tab-web").onclick = () => switchQRTab("web");
 $("qr-close").onclick = () => $("qr-dialog").close();
 
-let curTGUser = "";
+let curSecUser = "";
 
-async function openTGUser(name) {
-  curTGUser = name;
-  $("tgu-name").textContent = name;
-  const err = $("tgu-error");
-  const notice = $("tgu-notice");
+async function openSecretDialog(name) {
+  curSecUser = name;
+  $("sec-name").textContent = name;
+  const err = $("sec-error");
   err.hidden = true;
-  notice.hidden = true;
-
   try {
-    const enc = encodeURIComponent(name);
-    const info = await api("users/" + enc + "/telegram");
-    $("tgu-opt-mtproto").checked = !!info.mtproto;
-    $("tgu-opt-web").checked = !!info.web;
-    $("tgu-secret").value = info.secret || "";
-    $("tgu-mtproto-link").value = info.mtproto_link || "";
-    $("tgu-mtproto-app").href = info.mtproto_link || "#";
-
-    if (!info.web_domain_configured) {
-      $("tgu-web-link").value = "";
-      $("tgu-web-link").placeholder = "Домен CDN не настроен в разделе Telegram";
-      $("tgu-web-copy").disabled = true;
-      $("tgu-web-qr").disabled = true;
-    } else {
-      $("tgu-web-link").value = info.web_link || "";
-      $("tgu-web-link").placeholder = "";
-      $("tgu-web-copy").disabled = !info.web_link;
-      $("tgu-web-qr").disabled = !info.web_link;
-    }
-
-    if (!info.server_mtproto_enabled) {
-      notice.textContent = "Внимание: MTProto прокси отключен в основных настройках Telegram.";
-      notice.hidden = false;
-    } else if (info.web && !info.server_web_enabled) {
-      notice.textContent = "Внимание: Web / CDN мост отключен в основных настройках Telegram.";
-      notice.hidden = false;
-    }
-
-    $("tgu-dialog").showModal();
+    const info = await api("users/" + encodeURIComponent(name) + "/telegram");
+    $("sec-input").value = info.secret || "";
+    $("secret-dialog").showModal();
   } catch (e) {
     toast("Ошибка: " + e.message);
   }
 }
 
-$("tgu-close").onclick = () => $("tgu-dialog").close();
+$("sec-close").onclick = () => $("secret-dialog").close();
 
-$("tgu-mtproto-copy").onclick = () => {
-  copyText($("tgu-mtproto-link").value, "MTProto ссылка скопирована");
-};
-
-$("tgu-mtproto-qr").onclick = () => {
-  $("tgu-dialog").close();
-  openQR(curTGUser, "tg");
-};
-
-$("tgu-web-copy").onclick = () => {
-  if ($("tgu-web-link").value) {
-    copyText($("tgu-web-link").value, "Web ссылка скопирована");
-  } else {
-    toast("Домен CDN не настроен в Telegram");
-  }
-};
-
-$("tgu-web-qr").onclick = () => {
-  $("tgu-dialog").close();
-  openQR(curTGUser, "web");
-};
-
-$("tgu-new-secret").onclick = async () => {
-  if (!curTGUser) return;
-  const enc = encodeURIComponent(curTGUser);
+$("sec-random").onclick = async () => {
+  if (!curSecUser) return;
   try {
-    const info = await api("users/" + enc + "/telegram/secret", { method: "POST" });
-    $("tgu-secret").value = info.secret || "";
-    $("tgu-mtproto-link").value = info.mtproto_link || "";
-    $("tgu-mtproto-app").href = info.mtproto_link || "#";
-    $("tgu-web-link").value = info.web_link || "";
-    toast("Секрет обновлён");
+    const info = await api("users/" + encodeURIComponent(curSecUser) + "/telegram/secret", { method: "POST" });
+    $("sec-input").value = info.secret || "";
+    toast("Секрет сгенерирован");
   } catch (e) {
     toast("Ошибка: " + e.message);
   }
 };
 
-$("tgu-save").onclick = async () => {
-  if (!curTGUser) return;
-  const err = $("tgu-error");
+$("sec-save").onclick = async () => {
+  if (!curSecUser) return;
+  const err = $("sec-error");
   err.hidden = true;
-  const enc = encodeURIComponent(curTGUser);
-  const mtproto = $("tgu-opt-mtproto").checked;
-  const web = $("tgu-opt-web").checked;
-  const secret = $("tgu-secret").value.trim().toLowerCase();
+  const secret = $("sec-input").value.trim().toLowerCase();
 
   if (secret.length !== 32 || !/^[0-9a-f]{32}$/.test(secret)) {
     err.textContent = "Секрет должен состоять ровно из 32 шестнадцатеричных символов (0-9, a-f)";
@@ -756,12 +725,13 @@ $("tgu-save").onclick = async () => {
   }
 
   try {
-    await api("users/" + enc + "/telegram", {
+    const info = await api("users/" + encodeURIComponent(curSecUser) + "/telegram");
+    await api("users/" + encodeURIComponent(curSecUser) + "/telegram", {
       method: "POST",
-      body: { mtproto, web, secret }
+      body: { mtproto: info.mtproto, web: info.web, secret }
     });
-    toast("Настройки Telegram сохранены");
-    $("tgu-dialog").close();
+    toast("Секрет сохранён");
+    $("secret-dialog").close();
     refresh();
   } catch (e) {
     err.textContent = e.message;
@@ -791,16 +761,31 @@ async function remove(u) {
   toast("Пользователь " + u.name + " удалён");
   refresh();
 }
+let addTGOn = true;
+let addWebOn = true;
+
+if ($("add-tg-btn")) {
+  $("add-tg-btn").onclick = () => {
+    addTGOn = !addTGOn;
+    $("add-tg-btn").className = "tag-btn " + (addTGOn ? "on" : "off");
+  };
+}
+
+if ($("add-web-btn")) {
+  $("add-web-btn").onclick = () => {
+    addWebOn = !addWebOn;
+    $("add-web-btn").className = "tag-btn " + (addWebOn ? "on" : "off");
+  };
+}
+
 $("add-form").onsubmit = async ev => {
   ev.preventDefault();
   const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button[type=submit]");
-  const mtproto = $("add-tg-mtproto") ? $("add-tg-mtproto").checked : true;
-  const web = $("add-tg-web") ? $("add-tg-web").checked : true;
   err.hidden = true;
   b.disabled = true;
   try {
     const name = inp.value.trim();
-    await api("users", { method: "POST", body: { name, tg_mtproto: mtproto, tg_web: web } });
+    await api("users", { method: "POST", body: { name, tg_mtproto: addTGOn, tg_web: addWebOn } });
     inp.value = "";
     await refresh();
     openQR(name);

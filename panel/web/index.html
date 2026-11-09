@@ -205,14 +205,8 @@
         </div>
         <div class="add-tg-row">
           <span class="dim" style="font-size: 13px;">Telegram:</span>
-          <label class="check-pill">
-            <input type="checkbox" id="add-tg-mtproto" checked>
-            <span>MTProto Proxy</span>
-          </label>
-          <label class="check-pill">
-            <input type="checkbox" id="add-tg-web" checked>
-            <span>Web / CDN мост</span>
-          </label>
+          <button type="button" id="add-tg-btn" class="tag-btn on" title="MTProto Proxy">TG</button>
+          <button type="button" id="add-web-btn" class="tag-btn on" title="Web / CDN мост">WEB</button>
         </div>
         <p id="add-error" class="error" role="alert" hidden></p>
       </form>
@@ -486,65 +480,20 @@
   </div>
 </dialog>
 
-<dialog id="tgu-dialog" class="tg-dialog">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-    <h2 style="margin: 0; font-size: 18px;">Telegram: <span id="tgu-name"></span></h2>
-    <span id="tgu-status-tag" class="tag on">Включен</span>
+<dialog id="secret-dialog" style="width: min(440px, calc(100vw - 32px));">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+    <h2 style="margin: 0; font-size: 18px;">Секрет: <span id="sec-name"></span></h2>
   </div>
-
-  <p class="hint" style="margin-bottom: 16px;">
-    Индивидуальный доступ к прокси Telegram. У каждого пользователя свой секрет.
-  </p>
-
-  <div class="card" style="background: rgba(0,0,0,0.18); padding: 12px 14px; margin-bottom: 14px; border-radius: 8px;">
-    <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">Разрешённые протоколы для пользователя:</div>
-    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-      <label class="check-pill">
-        <input type="checkbox" id="tgu-opt-mtproto">
-        <span>MTProto Proxy</span>
-      </label>
-      <label class="check-pill">
-        <input type="checkbox" id="tgu-opt-web">
-        <span>Web / CDN мост</span>
-      </label>
-    </div>
+  <label for="sec-input">Секрет пользователя (32 hex-символа)</label>
+  <div class="check-row" style="margin-top: 6px; margin-bottom: 12px;">
+    <input id="sec-input" style="font-family: monospace; font-size: 13px;" minlength="32" maxlength="32" required spellcheck="false" autocomplete="off">
+    <button id="sec-random" type="button" style="white-space: nowrap;">Случайный</button>
   </div>
-
-  <div id="tgu-mtproto-box" class="tg-connect-card" style="margin-bottom: 12px;">
-    <div class="tg-connect-head">
-      <strong style="font-size: 13px;">MTProto Proxy</strong>
-      <div class="buttons" style="margin: 0; gap: 6px;">
-        <a id="tgu-mtproto-app" class="button primary small" href="#" target="_blank">Подключить</a>
-        <button id="tgu-mtproto-copy" class="small" type="button">Копировать</button>
-        <button id="tgu-mtproto-qr" class="small" type="button">QR-код</button>
-      </div>
-    </div>
-    <input id="tgu-mtproto-link" readonly onclick="this.select()" class="tg-link-input" aria-label="MTProto ссылка">
-  </div>
-
-  <div id="tgu-web-box" class="tg-connect-card" style="margin-bottom: 14px;">
-    <div class="tg-connect-head">
-      <strong style="font-size: 13px;">Telegram Web / CDN</strong>
-      <div class="buttons" style="margin: 0; gap: 6px;">
-        <button id="tgu-web-copy" class="small" type="button">Копировать</button>
-        <button id="tgu-web-qr" class="small" type="button">QR-код</button>
-      </div>
-    </div>
-    <input id="tgu-web-link" readonly onclick="this.select()" class="tg-link-input" aria-label="Web ссылка">
-  </div>
-
-  <label for="tgu-secret">Секрет пользователя (32 hex-символа)</label>
-  <div class="check-row" style="margin-top: 4px; margin-bottom: 14px;">
-    <input id="tgu-secret" style="font-family: monospace; font-size: 13px;" minlength="32" maxlength="32">
-    <button id="tgu-new-secret" type="button" style="white-space: nowrap;">Случайный</button>
-  </div>
-
-  <p id="tgu-notice" class="hint" style="color: var(--warn); margin-bottom: 10px;" hidden></p>
-  <p id="tgu-error" class="error" role="alert" hidden></p>
-
-  <div class="buttons" style="justify-content: flex-end; margin-top: 14px;">
-    <button id="tgu-close" type="button">Закрыть</button>
-    <button id="tgu-save" class="primary" type="button">Сохранить</button>
+  <p class="hint" style="margin-top: 0; margin-bottom: 14px;">При смене секрета старые ссылки пользователя перестанут работать.</p>
+  <p id="sec-error" class="error" role="alert" hidden></p>
+  <div class="buttons" style="justify-content: flex-end; margin-top: 16px;">
+    <button id="sec-close" type="button">Закрыть</button>
+    <button id="sec-save" class="primary" type="button">Сохранить</button>
   </div>
 </dialog>
 
