@@ -193,11 +193,11 @@ function go(name) {
   closeSheet();
   refresh();
 }
-async function refresh() {
+async function refresh(force = false) {
   stopPoll();
   const at = page;
   try {
-    if (at === "users") renderUsers(await api("users"));
+    if (at === "users") renderUsers(await api("users"), force);
     else if (at === "youtube") {
       const y = await api("youtube");
       if (page !== at) return;
@@ -445,10 +445,19 @@ function copyText(text, msg = "Скопировано") {
   toast(msg);
 }
 
-async function toggleUserTG(u, proto) {
+async function toggleUserTG(u, proto, btnEl) {
   const enc = encodeURIComponent(u.name);
   const newMtproto = proto === "tg" ? !u.tgMtproto : u.tgMtproto;
   const newWeb = proto === "web" ? !u.tgWeb : u.tgWeb;
+  const targetVal = proto === "tg" ? newMtproto : newWeb;
+
+  // Мгновенный визуальный отклик
+  if (btnEl) {
+    btnEl.className = "tag-btn " + (targetVal ? "on" : "off");
+    btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web / CDN мост: ") + (targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+    btnEl.blur();
+  }
+
   try {
     const info = await api("users/" + enc + "/telegram");
     await api("users/" + enc + "/telegram", {
@@ -457,16 +466,21 @@ async function toggleUserTG(u, proto) {
     });
     u.tgMtproto = newMtproto;
     u.tgWeb = newWeb;
-    toast((proto === "tg" ? "MTProto Proxy " : "Web мост ") + ((proto === "tg" ? newMtproto : newWeb) ? "включен" : "отключен") + " для " + u.name);
-    refresh();
+    toast((proto === "tg" ? "MTProto Proxy " : "Web мост ") + (targetVal ? "включен" : "отключен") + " для " + u.name);
+    refresh(true);
   } catch (e) {
+    // При ошибке возвращаем прежний цвет
+    if (btnEl) {
+      btnEl.className = "tag-btn " + (!targetVal ? "on" : "off");
+      btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web / CDN мост: ") + (!targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+    }
     toast("Ошибка: " + e.message);
   }
 }
 
-function renderUsers(list) {
+function renderUsers(list, force = false) {
   const box = $("users-list");
-  if (document.querySelector("#users-list button:focus")) return; // не сбивать фокус при обновлении
+  if (!force && document.querySelector("#users-list button:focus")) return; // не сбивать фокус при фоновом обновлении
   if (!list.length) {
     box.replaceChildren(el("p", "empty", "Пользователей пока нет. Впиши имя и нажми «Создать»."));
     return;
@@ -481,12 +495,12 @@ function renderUsers(list) {
     const btnTG = el("button", "tag-btn " + (u.tgMtproto ? "on" : "off"), "TG");
     btnTG.type = "button";
     btnTG.title = "MTProto Proxy: " + (u.tgMtproto ? "включен" : "отключен") + " (нажми для переключения)";
-    btnTG.onclick = () => toggleUserTG(u, "tg");
+    btnTG.onclick = () => toggleUserTG(u, "tg", btnTG);
 
     const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off"), "WEB");
     btnWeb.type = "button";
     btnWeb.title = "Web / CDN мост: " + (u.tgWeb ? "включен" : "отключен") + " (нажми для переключения)";
-    btnWeb.onclick = () => toggleUserTG(u, "web");
+    btnWeb.onclick = () => toggleUserTG(u, "web", btnWeb);
 
     tgCol.append(btnTG, btnWeb);
 
@@ -732,7 +746,7 @@ $("sec-save").onclick = async () => {
     });
     toast("Секрет сохранён");
     $("secret-dialog").close();
-    refresh();
+    refresh(true);
   } catch (e) {
     err.textContent = e.message;
     err.hidden = false;
@@ -740,18 +754,19 @@ $("sec-save").onclick = async () => {
 };
 
 async function toggle(u) {
+  if (document.activeElement) document.activeElement.blur();
   const name = encodeURIComponent(u.name);
   if (u.enabled) {
     await api("users/" + name + "/disable", { method: "POST" });
     toast("Пользователь " + u.name + " отключён", async () => {
       await api("users/" + name + "/enable", { method: "POST" });
-      refresh();
+      refresh(true);
     });
   } else {
     await api("users/" + name + "/enable", { method: "POST" });
     toast("Пользователь " + u.name + " включён");
   }
-  refresh();
+  refresh(true);
 }
 async function remove(u) {
   const yes = await confirmBox("Удалить " + u.name + "?",
@@ -759,7 +774,7 @@ async function remove(u) {
   if (!yes) return;
   await api("users/" + encodeURIComponent(u.name), { method: "DELETE" });
   toast("Пользователь " + u.name + " удалён");
-  refresh();
+  refresh(true);
 }
 let addTGOn = true;
 let addWebOn = true;
@@ -787,7 +802,7 @@ $("add-form").onsubmit = async ev => {
     const name = inp.value.trim();
     await api("users", { method: "POST", body: { name, tg_mtproto: addTGOn, tg_web: addWebOn } });
     inp.value = "";
-    await refresh();
+    await refresh(true);
     openQR(name);
   } catch (e) { err.textContent = e.message; err.hidden = false; }
   b.disabled = false;
