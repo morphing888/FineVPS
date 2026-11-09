@@ -128,6 +128,7 @@ func cmdServe(args []string) {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
+		app.Close()
 		_ = srv.Shutdown(sctx)
 	}()
 	if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {

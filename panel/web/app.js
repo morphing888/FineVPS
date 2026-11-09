@@ -182,27 +182,41 @@ $("logout-m").onclick = logout;
 // ---------- навигация ----------
 function stopPoll() { clearTimeout(timer); timer = null; }
 function go(name) {
-  if (!["users", "traffic", "servers", "youtube", "routes", "updates"].includes(name)) name = "traffic";
+  if (!["users", "traffic", "servers", "youtube", "routes", "updates", "telegram"].includes(name)) name = "traffic";
   page = name;
   history.replaceState(null, "", "#" + name);
   document.querySelectorAll(".tab[data-page]").forEach(t => {
     if (t.dataset.page === name) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
   });
   document.querySelectorAll(".page").forEach(p => { p.hidden = p.id !== "page-" + name; });
-  if (["servers", "updates"].includes(name)) $("more-tab").setAttribute("aria-current", "page"); else $("more-tab").removeAttribute("aria-current");
+  if (["servers", "updates", "telegram"].includes(name)) $("more-tab").setAttribute("aria-current", "page"); else $("more-tab").removeAttribute("aria-current");
   closeSheet();
   refresh();
 }
-async function refresh() {
+async function refresh(force = false) {
   stopPoll();
   const at = page;
   try {
-    if (at === "users") renderUsers(await api("users"));
-    else if (at === "youtube") renderYoutube(await api("youtube"));
+    if (at === "users") renderUsers(await api("users"), force);
+    else if (at === "youtube") {
+      const y = await api("youtube");
+      if (page !== at) return;
+      renderYoutube(y);
+      if ((y.auto && y.auto.state === "running") || (y.search && y.search.state === "running")) {
+        timer = setTimeout(refresh, 1500);
+        return;
+      }
+    }
     else if (at === "routes") {
       const d = await api("routes");
       if (page === at) renderRoutes(d);
       return; // страница не обновляется сама: на ней вводят адреса
+    }
+    else if (at === "telegram") {
+      const t = await api("telegram");
+      if (page !== at) return;
+      renderTelegram(t);
+      if (t.enabled) { timer = setTimeout(refresh, 3000); return; }
     }
     else if (at === "updates") {
       const s = await api("update");
@@ -416,9 +430,57 @@ function stateOf(u) {
   if (u.lastHandshake) return ["", "Был " + ago(Date.now() / 1000 - u.lastHandshake)];
   return ["", "Не подключался"];
 }
-function renderUsers(list) {
+function copyText(text, msg = "Скопировано") {
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast(msg);
+}
+
+async function toggleUserTG(u, proto, btnEl) {
+  const enc = encodeURIComponent(u.name);
+  const newMtproto = proto === "tg" ? !u.tgMtproto : u.tgMtproto;
+  const newWeb = proto === "web" ? !u.tgWeb : u.tgWeb;
+  const targetVal = proto === "tg" ? newMtproto : newWeb;
+
+  // Мгновенный визуальный отклик
+  if (btnEl) {
+    btnEl.className = "tag-btn " + (targetVal ? "on" : "off");
+    btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web-мост: ") + (targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+    btnEl.blur();
+  }
+
+  try {
+    const info = await api("users/" + enc + "/telegram");
+    await api("users/" + enc + "/telegram", {
+      method: "POST",
+      body: { mtproto: newMtproto, web: newWeb, secret: info.secret }
+    });
+    u.tgMtproto = newMtproto;
+    u.tgWeb = newWeb;
+    toast((proto === "tg" ? "MTProto Proxy " : "Web мост ") + (targetVal ? "включен" : "отключен") + " для " + u.name);
+    refresh(true);
+  } catch (e) {
+    // При ошибке возвращаем прежний цвет
+    if (btnEl) {
+      btnEl.className = "tag-btn " + (!targetVal ? "on" : "off");
+      btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web-мост: ") + (!targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+    }
+    toast("Ошибка: " + e.message);
+  }
+}
+
+function renderUsers(list, force = false) {
   const box = $("users-list");
-  if (document.querySelector("#users-list button:focus")) return; // не сбивать фокус при обновлении
+  if (!force && document.querySelector("#users-list button:focus")) return; // не сбивать фокус при фоновом обновлении
   if (!list.length) {
     box.replaceChildren(el("p", "empty", "Пользователей пока нет. Впиши имя и нажми «Создать»."));
     return;
@@ -428,18 +490,39 @@ function renderUsers(list) {
     const row = el("div", "user");
     const a = el("div");
     a.append(el("span", "user-name", u.name), el("span", "user-ip", u.ip));
+
+    const tgCol = el("div", "user-tg-col");
+    const tgActive = (u.tgDirectConns || 0) > 0;
+    const btnTG = el("button", "tag-btn " + (u.tgMtproto ? "on" : "off") + (tgActive ? " active" : ""), "TG" + (tgActive ? ` (${u.tgDirectConns})` : ""));
+    btnTG.type = "button";
+    btnTG.title = "MTProto Proxy: " + (u.tgMtproto ? "включен" : "отключен") + (tgActive ? ` • активно: ${u.tgDirectConns}` : "") + " (нажми для переключения)";
+    btnTG.onclick = () => toggleUserTG(u, "tg", btnTG);
+
+    const webActive = (u.tgWebConns || 0) > 0;
+    const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off") + (webActive ? " active" : ""), "WEB" + (webActive ? ` (${u.tgWebConns})` : ""));
+    btnWeb.type = "button";
+    btnWeb.title = "Web-мост: " + (u.tgWeb ? "включен" : "отключен") + (webActive ? ` • активно: ${u.tgWebConns}` : "") + " (нажми для переключения)";
+    btnWeb.onclick = () => toggleUserTG(u, "web", btnWeb);
+
+    tgCol.append(btnTG, btnWeb);
+
     const [cls, text] = stateOf(u);
     const st = el("div");
-    st.append(el("span", "tag " + cls, text));
+    const tagEl = el("span", "tag " + cls, text);
+    if (u.tgConns > 0) {
+      tagEl.title = `Telegram: ${u.tgConns} активных соед.`;
+    }
+    st.append(tagEl);
     const sp = el("div");
     sp.append(el("span", "cap", "Скорость"), el("span", "", u.online ? bits(u.downBps + u.upBps) : "нет"));
     const tot = el("div");
     tot.append(el("span", "cap", "За месяц"), el("span", "", bytes(u.monthDown + u.monthUp)));
     const act = el("div", "actions");
-    act.append(btn("QR-код", () => openQR(u.name)));
+    act.append(btn("QR-код", () => openQR(u.name, "wg")));
+    act.append(btn("Секрет", () => openSecretDialog(u.name)));
     act.append(btn(u.enabled ? "Отключить" : "Включить", () => toggle(u)));
     act.append(btn("Удалить", () => remove(u)));
-    row.append(a, st, sp, tot, act);
+    row.append(a, tgCol, st, sp, tot, act);
     root.append(row);
   }
   box.replaceChildren(root);
@@ -455,28 +538,287 @@ function btn(text, fn) {
   };
   return b;
 }
-function openQR(name) {
+
+let curQRUser = "";
+let curQRTab = "wg";
+let curQRTGInfo = null;
+
+async function switchQRTab(tab) {
+  curQRTab = tab;
+  $("qr-tab-wg").setAttribute("aria-pressed", tab === "wg");
+  $("qr-tab-tg").setAttribute("aria-pressed", tab === "tg");
+  $("qr-tab-web").setAttribute("aria-pressed", tab === "web");
+
+  const enc = encodeURIComponent(curQRUser);
+  const img = $("qr-img");
+  const hint = $("qr-hint");
+  const fileBtn = $("qr-file");
+  const tgConnect = $("qr-tg-connect");
+  const tgCopy = $("qr-tg-copy");
+  const linkBox = $("qr-link-box");
+  const linkInp = $("qr-link-input");
+  const emptyCard = $("qr-empty-card");
+  const emptyTitle = $("qr-empty-title");
+  const emptyDesc = $("qr-empty-desc");
+  const emptyAction = $("qr-empty-action");
+
+  if (tab === "wg") {
+    img.hidden = false;
+    img.src = "api/users/" + enc + "/qr.svg";
+    emptyCard.hidden = true;
+    hint.hidden = false;
+    hint.textContent = "Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.";
+    hint.style.color = "";
+    fileBtn.hidden = false;
+    tgConnect.hidden = true;
+    tgCopy.hidden = true;
+    linkBox.hidden = true;
+    return;
+  }
+
+  // Load telegram info if not loaded yet
+  if (!curQRTGInfo || curQRTGInfo.name !== curQRUser) {
+    try {
+      curQRTGInfo = await api("users/" + enc + "/telegram");
+    } catch (e) {
+      img.hidden = true;
+      emptyCard.hidden = false;
+      emptyTitle.textContent = "Ошибка загрузки";
+      emptyDesc.textContent = "Не удалось загрузить данные Telegram: " + e.message;
+      emptyAction.hidden = true;
+      hint.hidden = true;
+      fileBtn.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+      linkBox.hidden = true;
+      return;
+    }
+  }
+
+  fileBtn.hidden = true;
+
+  if (tab === "tg") {
+    const link = curQRTGInfo.mtproto_link || "";
+    if (link && curQRTGInfo.mtproto) {
+      img.hidden = false;
+      img.src = "api/users/" + enc + "/telegram/qr.svg?type=mtproto";
+      emptyCard.hidden = true;
+      hint.hidden = false;
+      hint.textContent = curQRTGInfo.server_mtproto_enabled
+        ? "Отсканируй в Telegram или камерой для быстрого подключения."
+        : "Внимание: MTProto прокси отключен на сервере (раздел Telegram).";
+      hint.style.color = curQRTGInfo.server_mtproto_enabled ? "" : "var(--warn)";
+      linkBox.hidden = false;
+      linkInp.value = link;
+      tgConnect.hidden = false;
+      tgConnect.href = link;
+      tgCopy.hidden = false;
+      tgCopy.onclick = () => copyText(link, "MTProto ссылка скопирована");
+    } else {
+      img.hidden = true;
+      emptyCard.hidden = false;
+      if (!curQRTGInfo.mtproto) {
+        emptyTitle.textContent = "MTProto прокси отключен";
+        emptyDesc.textContent = "MTProto выключен для этого пользователя.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small primary";
+        emptyAction.textContent = "Включить";
+        emptyAction.onclick = async () => {
+          emptyAction.disabled = true;
+          try {
+            await api("users/" + enc + "/telegram", {
+              method: "POST",
+              body: { mtproto: true, web: curQRTGInfo.web, secret: curQRTGInfo.secret }
+            });
+            curQRTGInfo.mtproto = true;
+            toast("MTProto Proxy включен для " + curQRUser);
+            refresh(true);
+            curQRTGInfo = null;
+            await switchQRTab("tg");
+          } catch (e) {
+            toast("Ошибка: " + e.message);
+          } finally {
+            emptyAction.disabled = false;
+          }
+        };
+      } else {
+        emptyTitle.textContent = "MTProto отключен на сервере";
+        emptyDesc.textContent = "MTProto выключен в основных настройках Telegram.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small";
+        emptyAction.textContent = "Настройки Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      }
+      hint.hidden = true;
+      linkBox.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+    }
+  } else if (tab === "web") {
+    const link = curQRTGInfo.web_link || "";
+    if (link && curQRTGInfo.web && curQRTGInfo.web_domain_configured) {
+      img.hidden = false;
+      img.src = "api/users/" + enc + "/telegram/qr.svg?type=web";
+      emptyCard.hidden = true;
+      hint.hidden = false;
+      hint.textContent = curQRTGInfo.server_web_enabled
+        ? "Отсканируй в Telegram или камерой для быстрого подключения."
+        : "Внимание: Web-мост выключен в основных настройках Telegram.";
+      hint.style.color = curQRTGInfo.server_web_enabled ? "" : "var(--warn)";
+      linkBox.hidden = false;
+      linkInp.value = link;
+      tgConnect.hidden = false;
+      tgConnect.href = link;
+      tgCopy.hidden = false;
+      tgCopy.onclick = () => copyText(link, "Ссылка Web-прокси скопирована");
+    } else {
+      img.hidden = true;
+      emptyCard.hidden = false;
+      if (!curQRTGInfo.web) {
+        emptyTitle.textContent = "Web-мост отключен";
+        emptyDesc.textContent = "Доступ к Web-мосту выключен для этого пользователя.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small primary";
+        emptyAction.textContent = "Включить";
+        emptyAction.onclick = async () => {
+          emptyAction.disabled = true;
+          try {
+            await api("users/" + enc + "/telegram", {
+              method: "POST",
+              body: { mtproto: curQRTGInfo.mtproto, web: true, secret: curQRTGInfo.secret }
+            });
+            curQRTGInfo.web = true;
+            toast("Web мост включен для " + curQRUser);
+            refresh(true);
+            curQRTGInfo = null;
+            await switchQRTab("web");
+          } catch (e) {
+            toast("Ошибка: " + e.message);
+          } finally {
+            emptyAction.disabled = false;
+          }
+        };
+      } else if (!curQRTGInfo.web_domain_configured) {
+        emptyTitle.textContent = "Домен не настроен";
+        emptyDesc.textContent = "Чтобы веб-мост заработал, укажи публичный домен в разделе Telegram (например, tg.example.com).";
+        emptyAction.hidden = false;
+        emptyAction.className = "small";
+        emptyAction.textContent = "Настроить домен в Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      } else {
+        emptyTitle.textContent = "Веб-мост не активен";
+        emptyDesc.textContent = "Включи Web-мост в разделе Telegram.";
+        emptyAction.hidden = false;
+        emptyAction.className = "small";
+        emptyAction.textContent = "Открыть настройки Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      }
+      hint.hidden = true;
+      linkBox.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+    }
+  }
+}
+
+async function openQR(name, initialTab = "wg") {
+  curQRUser = name;
+  curQRTGInfo = null;
+  const tabs = document.querySelector(".qr-tabs");
+  if (tabs) tabs.hidden = false;
+  $("qr-file").style.display = "";
   const enc = encodeURIComponent(name);
   $("qr-title").textContent = name;
-  $("qr-img").src = "api/users/" + enc + "/qr.svg";
   $("qr-file").href = "api/users/" + enc + "/conf";
   $("qr-file").setAttribute("download", name + ".conf");
+  await switchQRTab(initialTab);
   $("qr-dialog").showModal();
 }
+
+$("qr-tab-wg").onclick = () => switchQRTab("wg");
+$("qr-tab-tg").onclick = () => switchQRTab("tg");
+$("qr-tab-web").onclick = () => switchQRTab("web");
 $("qr-close").onclick = () => $("qr-dialog").close();
+
+let curSecUser = "";
+
+async function openSecretDialog(name) {
+  curSecUser = name;
+  $("sec-name").textContent = name;
+  const err = $("sec-error");
+  err.hidden = true;
+  try {
+    const info = await api("users/" + encodeURIComponent(name) + "/telegram");
+    $("sec-input").value = info.secret || "";
+    $("secret-dialog").showModal();
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+}
+
+$("sec-close").onclick = () => $("secret-dialog").close();
+
+$("sec-random").onclick = async () => {
+  if (!curSecUser) return;
+  try {
+    const info = await api("users/" + encodeURIComponent(curSecUser) + "/telegram/secret", { method: "POST" });
+    $("sec-input").value = info.secret || "";
+    toast("Секрет сгенерирован");
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+};
+
+$("sec-save").onclick = async () => {
+  if (!curSecUser) return;
+  const err = $("sec-error");
+  err.hidden = true;
+  const secret = $("sec-input").value.trim().toLowerCase();
+
+  if (secret.length !== 32 || !/^[0-9a-f]{32}$/.test(secret)) {
+    err.textContent = "Секрет должен состоять ровно из 32 шестнадцатеричных символов (0-9, a-f)";
+    err.hidden = false;
+    return;
+  }
+
+  try {
+    const info = await api("users/" + encodeURIComponent(curSecUser) + "/telegram");
+    await api("users/" + encodeURIComponent(curSecUser) + "/telegram", {
+      method: "POST",
+      body: { mtproto: info.mtproto, web: info.web, secret }
+    });
+    toast("Секрет сохранён");
+    $("secret-dialog").close();
+    refresh(true);
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
+};
+
 async function toggle(u) {
+  if (document.activeElement) document.activeElement.blur();
   const name = encodeURIComponent(u.name);
   if (u.enabled) {
     await api("users/" + name + "/disable", { method: "POST" });
     toast("Пользователь " + u.name + " отключён", async () => {
       await api("users/" + name + "/enable", { method: "POST" });
-      refresh();
+      refresh(true);
     });
   } else {
     await api("users/" + name + "/enable", { method: "POST" });
     toast("Пользователь " + u.name + " включён");
   }
-  refresh();
+  refresh(true);
 }
 async function remove(u) {
   const yes = await confirmBox("Удалить " + u.name + "?",
@@ -484,18 +826,35 @@ async function remove(u) {
   if (!yes) return;
   await api("users/" + encodeURIComponent(u.name), { method: "DELETE" });
   toast("Пользователь " + u.name + " удалён");
-  refresh();
+  refresh(true);
 }
+let addTGOn = true;
+let addWebOn = true;
+
+if ($("add-tg-btn")) {
+  $("add-tg-btn").onclick = () => {
+    addTGOn = !addTGOn;
+    $("add-tg-btn").className = "tag-btn " + (addTGOn ? "on" : "off");
+  };
+}
+
+if ($("add-web-btn")) {
+  $("add-web-btn").onclick = () => {
+    addWebOn = !addWebOn;
+    $("add-web-btn").className = "tag-btn " + (addWebOn ? "on" : "off");
+  };
+}
+
 $("add-form").onsubmit = async ev => {
   ev.preventDefault();
-  const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button");
+  const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button[type=submit]");
   err.hidden = true;
   b.disabled = true;
   try {
     const name = inp.value.trim();
-    await api("users", { method: "POST", body: { name } });
+    await api("users", { method: "POST", body: { name, tg_mtproto: addTGOn, tg_web: addWebOn } });
     inp.value = "";
-    await refresh();
+    await refresh(true);
     openQR(name);
   } catch (e) { err.textContent = e.message; err.hidden = false; }
   b.disabled = false;
@@ -933,6 +1292,7 @@ function renderYoutube(y) {
     optRow({ name: "Через сервер 2", desc: "Самый надёжный вариант. Российский сервер не участвует в обходе.", active: y.mode === "exit", run: () => setMode("exit") }),
     optRow({ name: "С сервера 1 без обхода", desc: "YouTube идёт напрямую. Подойдёт, если хостер его не замедляет.", active: y.mode === "direct", mark: y.directMark, markId: "direct", run: () => setMode("direct"), next: () => setPreset(y.presets[0].id) }),
   );
+  renderAuto(y.auto || { state: "idle", items: [] }, y);
   const blocks = [];
   let box = null, head = null;
   y.presets.forEach((p, i) => {
@@ -947,6 +1307,89 @@ function renderYoutube(y) {
   });
   $("yt-presets").replaceChildren(...blocks);
   renderSearch(y.search || { state: "idle" });
+}
+let autoShowDetails = false;
+function renderAuto(a, y) {
+  const box = $("yt-auto");
+  if (!box) return;
+  const row = el("div", "opt" + (a.state === "running" ? " active" : ""));
+  const info = el("div"), title = el("div", "opt-title");
+  title.append(document.createTextNode("Автоподбор стратегии (быстрый)"));
+  let desc = "За 1–2 минуты проверяет все готовые стратегии (tpws, zapret2 nfqws2, ByeDPI) на соединениях к YouTube и Google Video и сразу включает лучшую по отклику.";
+  if (a.state === "running") {
+    const pct = a.total > 0 ? Math.round((a.current / a.total) * 100) : 0;
+    title.append(el("span", "tag brand", `Проверка ${a.current || 1} из ${a.total || 16}`));
+    desc = (a.currentName ? `Сейчас проверяется: «${a.currentName}» (${a.currentId}). ` : "Подготовка к проверке... ") + "Страницу можно не закрывать — результаты обновляются на ходу.";
+    const bar = el("div", "meter-bar auto-bar"), fill = el("i", "");
+    fill.style.width = Math.max(4, pct) + "%";
+    bar.append(fill);
+    info.append(title, el("div", "opt-desc", desc), bar);
+  } else {
+    if (a.state === "done" && a.result === "found") {
+      title.append(el("span", "tag on", "Подобрана: " + (a.bestName || a.best)));
+      desc = `Лучшая стратегия «${a.bestName || a.best}» автоматически включена и отмечена «Помогло». Если длинное видео всё же буферизуется, выбери другую из прошедших проверку ниже.`;
+    } else if (a.state === "done" && a.result === "nobypass") {
+      title.append(el("span", "tag on", "Обход не нужен"));
+      desc = "Сервер 1 открывает YouTube и Google Video напрямую без замедления. Включён режим «С сервера 1 без обхода».";
+    } else if (a.state === "done") {
+      title.append(el("span", "tag warn", "Стратегия не найдена"));
+      desc = "Ни один из быстрых способов не дал стабильного ответа от серверов YouTube. Рекомендуется режим «Через сервер 2» или глубокий подбор blockcheck2.";
+    } else if (a.state === "failed") {
+      title.append(el("span", "tag warn", "Прервался"));
+      desc = "Автоподбор был прерван. Можно запустить его заново.";
+    }
+    info.append(title, el("div", "opt-desc", desc));
+  }
+  const side = el("div", "opt-side");
+  if (a.state === "running") {
+    const stopBtn = el("button", "small danger", "Остановить");
+    stopBtn.type = "button";
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      try {
+        await api("youtube/stop", { method: "POST" });
+        toast("Автоподбор остановлен");
+        renderAuto({ ...a, state: "failed" }, y);
+      } catch (err) {
+        toast("Ошибка остановки: " + err.message);
+      }
+    };
+    side.append(stopBtn);
+  } else {
+    if (Array.isArray(a.items) && a.items.length > 0) {
+      const toggle = el("button", "small ghost", autoShowDetails ? "Скрыть отчёт" : `Отчёт (${a.items.filter(x => x.status === "ok").length}/${a.items.length})`);
+      toggle.type = "button";
+      toggle.onclick = () => { autoShowDetails = !autoShowDetails; renderAuto(a, y); };
+      side.append(toggle);
+    }
+    side.append(ytBtn(a.state === "idle" ? "Подобрать автоматически" : "Проверить заново", async () => {
+      autoShowDetails = true;
+      await api("youtube/auto", { method: "POST" });
+      toast("Быстрый автоподбор запущен (1–2 мин)");
+    }));
+  }
+  row.append(info, side);
+  const kids = [row];
+  if (Array.isArray(a.items) && a.items.length > 0 && (a.state === "running" || autoShowDetails)) {
+    const list = el("div", "auto-items");
+    a.items.forEach(it => {
+      const item = el("div", "auto-item");
+      const left = el("div", "auto-item-left");
+      const badge = el("span", "tag " + (it.status === "ok" ? "on" : "off"), it.status === "ok" ? `${it.ms} мс` : "Сбой");
+      left.append(badge, el("strong", "", it.name), el("span", "dim", it.group));
+      const right = el("div", "auto-item-right");
+      const isActive = (it.id === "direct" && y.mode === "direct") || (it.id !== "direct" && y.mode === "bypass" && y.preset === it.id);
+      if (isActive) {
+        right.append(el("span", "tag brand", "Активно"));
+      } else if (a.state !== "running" && it.status === "ok") {
+        right.append(ytBtn("Включить", () => it.id === "direct" ? setMode("direct") : setPreset(it.id)));
+      }
+      item.append(left, right);
+      list.append(item);
+    });
+    kids.push(list);
+  }
+  box.replaceChildren(...kids);
 }
 let searchAsk = false;
 function renderSearch(s) {
@@ -973,7 +1416,21 @@ function renderSearch(s) {
   }
   info.append(title, el("div", "opt-desc", desc));
   const side = el("div", "opt-side");
-  if (s.state !== "running") {
+  if (s.state === "running") {
+    const stopBtn = el("button", "small danger", "Остановить");
+    stopBtn.type = "button";
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      try {
+        await api("youtube/stop", { method: "POST" });
+        toast("Подбор остановлен");
+        renderSearch({ ...s, state: "failed" });
+      } catch (err) {
+        toast("Ошибка остановки: " + err.message);
+      }
+    };
+    side.append(stopBtn);
+  } else {
     if (!searchAsk) {
       const b = el("button", "small", s.state === "idle" ? "Запустить подбор" : "Подобрать заново");
       b.type = "button";
@@ -1038,3 +1495,212 @@ $("pass-form").onsubmit = async ev => {
   if (!h.admin) { showSetup(setupToken ? "admin-form" : "setup-wait"); return; }
   await enter();
 })().catch(() => {});
+
+// ---------- telegram ----------
+let tgData = null;
+let tgUpstream = "direct";
+
+function renderTelegram(t) {
+  tgData = t;
+  const isEditing = document.activeElement && [
+    $("tg-port"), $("tg-tls-domain"), $("tg-secret"), $("tg-web-domain"), $("tg-web-port")
+  ].includes(document.activeElement);
+
+  // MTProto Header Tag & Toggle Button
+  const tag = $("tg-status-tag");
+  const toggleBtn = $("tg-toggle-btn");
+  if (t.running) {
+    tag.textContent = "Работает";
+    tag.className = "tag on";
+    toggleBtn.textContent = "Отключить";
+    toggleBtn.className = "small danger";
+  } else if (t.enabled) {
+    tag.textContent = "Запуск...";
+    tag.className = "tag warn";
+    toggleBtn.textContent = "Отключить";
+    toggleBtn.className = "small danger";
+  } else {
+    tag.textContent = "Отключен";
+    tag.className = "tag off";
+    toggleBtn.textContent = "Включить";
+    toggleBtn.className = "small";
+  }
+
+  // Web Header Tag & Toggle Button
+  const webTag = $("tg-web-status-tag");
+  const webToggleBtn = $("tg-web-toggle-btn");
+  if (t.web_running) {
+    webTag.textContent = "Работает";
+    webTag.className = "tag on";
+    webToggleBtn.textContent = "Отключить";
+    webToggleBtn.className = "small danger";
+  } else if (t.web_enabled && t.enabled) {
+    webTag.textContent = "Запуск...";
+    webTag.className = "tag warn";
+    webToggleBtn.textContent = "Отключить";
+    webToggleBtn.className = "small danger";
+  } else {
+    webTag.textContent = "Отключен";
+    webTag.className = "tag off";
+    webToggleBtn.textContent = "Включить";
+    webToggleBtn.className = "small";
+  }
+
+  $("tg-conn").textContent = t.connections || 0;
+
+  if (!isEditing) {
+    $("tg-port").value = t.port || 8443;
+    $("tg-tls-domain").value = t.tls_domain || "ya.ru";
+    $("tg-secret").value = t.secret || "";
+    $("tg-web-domain").value = t.web_domain || "";
+    $("tg-web-port").value = t.web_port || 8085;
+    setUpstreamPills(t.upstream || "direct");
+  }
+
+  // Connect box
+  const cbox = $("tg-connect-box");
+  if (t.enabled && t.mtproto_link) {
+    cbox.hidden = false;
+    $("tg-app-link").href = t.mtproto_link;
+    $("tg-preview-link").value = t.mtproto_link;
+  } else {
+    cbox.hidden = true;
+  }
+
+  // Web connect box
+  const wbox = $("tg-web-connect-box");
+  if (t.enabled && t.web_enabled && t.web_link) {
+    wbox.hidden = false;
+    if ($("tg-web-app-link")) $("tg-web-app-link").href = t.web_link;
+    $("tg-web-preview").value = t.web_link;
+  } else {
+    wbox.hidden = true;
+  }
+}
+
+function setUpstreamPills(up) {
+  tgUpstream = up;
+  $("tg-up-direct").setAttribute("aria-pressed", String(up !== "cascade"));
+  $("tg-up-cascade").setAttribute("aria-pressed", String(up === "cascade"));
+}
+
+$("tg-up-direct").onclick = () => setUpstreamPills("direct");
+$("tg-up-cascade").onclick = () => setUpstreamPills("cascade");
+
+async function saveTelegram(patch) {
+  const current = tgData || {};
+  const cfg = {
+    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
+    port: parseInt($("tg-port").value, 10) || current.port || 8443,
+    tls_domain: $("tg-tls-domain").value.trim() || current.tls_domain || "ya.ru",
+    secret: $("tg-secret").value.trim().toLowerCase() || current.secret || "",
+    upstream: tgUpstream,
+    web_enabled: patch.web_enabled !== undefined ? patch.web_enabled : current.web_enabled,
+    web_domain: $("tg-web-domain").value.trim(),
+    web_port: parseInt($("tg-web-port").value, 10) || current.web_port || 8085
+  };
+  const res = await api("telegram/apply", {
+    method: "POST",
+    body: cfg
+  });
+  renderTelegram(res);
+  return res;
+}
+
+$("tg-toggle-btn").onclick = async () => {
+  if (!tgData) return;
+  const newEnabled = !tgData.enabled;
+  try {
+    await saveTelegram({ enabled: newEnabled });
+    toast(newEnabled ? "MTProto Proxy включен" : "MTProto Proxy отключен");
+  } catch (err) {
+    toast("Ошибка: " + err.message);
+  }
+};
+
+$("tg-web-toggle-btn").onclick = async () => {
+  if (!tgData) return;
+  const newWeb = !tgData.web_enabled;
+  try {
+    await saveTelegram({ web_enabled: newWeb });
+    toast(newWeb ? "Web-мост включен" : "Web-мост отключен");
+  } catch (err) {
+    toast("Ошибка: " + err.message);
+  }
+};
+
+$("tg-new-secret").onclick = async () => {
+  try {
+    const st = await api("telegram/secret", { method: "POST" });
+    if (st && st.secret) {
+      renderTelegram(st);
+      toast("Сгенерирован новый секрет");
+    }
+  } catch (err) {
+    toast("Ошибка генерации: " + err.message);
+  }
+};
+
+$("tg-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    await saveTelegram({});
+    toast("Настройки MTProto сохранены");
+  } catch (err) {
+    toast("Ошибка сохранения: " + err.message);
+  }
+};
+
+$("tg-web-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    await saveTelegram({});
+    toast("Настройки Web-моста сохранены");
+  } catch (err) {
+    toast("Ошибка сохранения: " + err.message);
+  }
+};
+
+$("tg-copy-link").onclick = () => {
+  if (tgData && tgData.mtproto_link) {
+    navigator.clipboard.writeText(tgData.mtproto_link);
+    toast("Ссылка скопирована");
+  }
+};
+
+$("tg-web-copy").onclick = () => {
+  if (tgData && tgData.web_link) {
+    navigator.clipboard.writeText(tgData.web_link);
+    toast("Веб-ссылка скопирована");
+  }
+};
+
+function openTelegramQR(title, type) {
+  const tabs = document.querySelector(".qr-tabs");
+  if (tabs) tabs.hidden = true;
+  $("qr-title").textContent = title;
+  $("qr-img").hidden = false;
+  $("qr-img").src = "api/telegram/qr.svg?type=" + type;
+  $("qr-empty-card").hidden = true;
+  $("qr-file").hidden = true;
+  const link = type === "web" ? (tgData && tgData.web_link) : (tgData && tgData.mtproto_link);
+  if (link) {
+    $("qr-link-box").hidden = false;
+    $("qr-link-input").value = link;
+    $("qr-tg-connect").hidden = false;
+    $("qr-tg-connect").href = link;
+    $("qr-tg-copy").hidden = false;
+    $("qr-tg-copy").onclick = () => copyText(link, "Ссылка скопирована");
+  } else {
+    $("qr-link-box").hidden = true;
+    $("qr-tg-connect").hidden = true;
+    $("qr-tg-copy").hidden = true;
+  }
+  $("qr-hint").hidden = false;
+  $("qr-hint").style.color = "";
+  $("qr-hint").textContent = "Отсканируй QR-код камерой телефона или в Telegram для подключения к прокси.";
+  $("qr-dialog").showModal();
+}
+
+$("tg-qr-link").onclick = () => openTelegramQR("MTProto Proxy", "mtproto");
+$("tg-web-qr").onclick = () => openTelegramQR("Telegram Web Proxy", "web");

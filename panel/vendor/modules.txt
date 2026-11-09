@@ -1,0 +1,71 @@
+# github.com/9seconds/mtg/v2 v2.2.8 => github.com/AYastrebov/mtg/v2 v2.0.0-20261017111415-962efeccda0c
+## explicit; go 1.25.0
+github.com/9seconds/mtg/v2/antireplay
+github.com/9seconds/mtg/v2/essentials
+github.com/9seconds/mtg/v2/events
+github.com/9seconds/mtg/v2/ipblocklist
+github.com/9seconds/mtg/v2/ipblocklist/files
+github.com/9seconds/mtg/v2/logger
+github.com/9seconds/mtg/v2/mtglib
+github.com/9seconds/mtg/v2/mtglib/internal/dc
+github.com/9seconds/mtg/v2/mtglib/internal/doppel
+github.com/9seconds/mtg/v2/mtglib/internal/relay
+github.com/9seconds/mtg/v2/mtglib/internal/tls
+github.com/9seconds/mtg/v2/mtglib/internal/tls/fake
+github.com/9seconds/mtg/v2/mtglib/obfuscation
+github.com/9seconds/mtg/v2/network/v2
+# github.com/OneOfOne/xxhash v1.2.8
+## explicit; go 1.11
+github.com/OneOfOne/xxhash
+# github.com/mattn/go-colorable v0.1.14
+## explicit; go 1.18
+github.com/mattn/go-colorable
+# github.com/mattn/go-isatty v0.0.20
+## explicit; go 1.15
+github.com/mattn/go-isatty
+# github.com/panjf2000/ants/v2 v2.12.0
+## explicit; go 1.19
+github.com/panjf2000/ants/v2
+github.com/panjf2000/ants/v2/pkg/sync
+# github.com/pires/go-proxyproto v0.11.0
+## explicit; go 1.24
+github.com/pires/go-proxyproto
+# github.com/rs/zerolog v1.35.0
+## explicit; go 1.23
+github.com/rs/zerolog
+github.com/rs/zerolog/internal/cbor
+github.com/rs/zerolog/internal/json
+# github.com/tylertreat/BoomFilters v0.0.0-20251117164519-53813c36cc1b
+## explicit
+github.com/tylertreat/BoomFilters
+# github.com/yl2chen/cidranger v1.0.2
+## explicit; go 1.13
+github.com/yl2chen/cidranger
+github.com/yl2chen/cidranger/net
+# golang.org/x/crypto v0.52.0
+## explicit; go 1.25.0
+golang.org/x/crypto/argon2
+golang.org/x/crypto/blake2b
+golang.org/x/crypto/curve25519
+# golang.org/x/net v0.55.0
+## explicit; go 1.25.0
+golang.org/x/net/bpf
+golang.org/x/net/icmp
+golang.org/x/net/internal/iana
+golang.org/x/net/internal/socket
+golang.org/x/net/internal/socks
+golang.org/x/net/ipv4
+golang.org/x/net/ipv6
+golang.org/x/net/proxy
+# golang.org/x/sync v0.20.0
+## explicit; go 1.25.0
+golang.org/x/sync/errgroup
+# golang.org/x/sys v0.45.0
+## explicit; go 1.25.0
+golang.org/x/sys/cpu
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+# github.com/9seconds/mtg/v2 => github.com/AYastrebov/mtg/v2 v2.0.0-20261017111415-962efeccda0c
+# github.com/gorilla/websocket v1.5.3
+## explicit; go 1.20
+github.com/gorilla/websocket

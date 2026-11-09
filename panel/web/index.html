@@ -29,6 +29,7 @@
   <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c3 3 3 16 0 19M12 2.5c-3 3-3 16 0 19"/></symbol>
   <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4c5-2.5 9 2.5 14 0v10c-5 2.5-9-2.5-14 0"/></symbol>
+  <symbol id="i-tg" viewBox="0 0 24 24"><path d="m21.5 3.5-19 7.3c-1.3.5-1.3 1.3-.2 1.6l4.9 1.5 11.3-7.1c.5-.3 1-.1.6.2l-9.2 8.3-.3 4.8c.5 0 .7-.2 1-.5l2.4-2.3 5 3.7c.9.5 1.6.3 1.8-.8l3.3-15.5c.3-1.3-.5-1.9-1.6-1.2z"/></symbol>
 </svg>
 
 <section id="setup" class="login" hidden>
@@ -107,6 +108,7 @@
       <button class="tab" data-page="users" type="button"><svg><use href="#i-users"/></svg><span>Пользователи</span></button>
       <button class="tab" data-page="youtube" type="button"><svg><use href="#i-play"/></svg><span>YouTube</span></button>
       <button class="tab" data-page="routes" type="button"><svg><use href="#i-route"/></svg><span>Маршруты</span></button>
+      <button class="tab" data-page="telegram" type="button"><svg><use href="#i-tg"/></svg><span>Telegram</span></button>
       <button class="tab" data-page="servers" type="button"><svg><use href="#i-server"/></svg><span>Серверы</span></button>
       <button class="tab" data-page="updates" type="button"><svg><use href="#i-update"/></svg><span>Обновления</span></button>
       <button id="more-tab" class="tab more-tab" type="button" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#i-more"/></svg><span>Ещё</span></button>
@@ -136,7 +138,7 @@
           <g class="node"><rect x="310" y="42" width="170" height="84" rx="16"/><circle class="b-dev" cx="348" cy="84" r="21"/><svg x="336" y="72" width="24" height="24"><use href="#i-server"/></svg><text class="name" x="378" y="79">Сервер 1</text><text class="sub" x="378" y="100">Россия</text></g>
           <g class="node"><rect x="596" y="42" width="170" height="84" rx="16"/><circle class="b-via" cx="634" cy="84" r="21"/><svg x="622" y="72" width="24" height="24"><use href="#i-server"/></svg><text class="name" x="664" y="79">Сервер 2</text><text class="sub" x="664" y="100" data-v="s2state"></text></g>
           <g class="node"><rect x="882" y="42" width="174" height="84" rx="16"/><circle class="b-via" cx="920" cy="84" r="21"/><svg x="908" y="72" width="24" height="24"><use href="#i-globe"/></svg><text class="name" x="950" y="89">Интернет</text></g>
-          <g class="node"><rect x="596" y="190" width="240" height="84" rx="16"/><circle class="b-dir" cx="634" cy="232" r="21"/><svg x="622" y="220" width="24" height="24"><use href="#i-flag"/></svg><text class="name" x="664" y="227">Напрямую</text><text class="sub" x="664" y="248" data-v="direct-name"></text></g>
+          <g class="node"><rect x="596" y="190" width="260" height="84" rx="16"/><circle class="b-dir" cx="634" cy="232" r="21"/><svg x="622" y="220" width="24" height="24"><use href="#i-flag"/></svg><text class="name" x="664" y="227">Напрямую</text><text class="sub" x="664" y="248" data-v="direct-name"></text></g>
           <g class="pill"><rect y="71" height="26" rx="13"/><text x="252" y="89" data-v="dev"></text></g>
           <g class="pill"><rect y="71" height="26" rx="13"/><text x="538" y="89" data-v="via"></text></g>
           <g class="pill"><rect y="71" height="26" rx="13"/><text x="824" y="89" data-v="s2"></text></g>
@@ -201,6 +203,11 @@
           <input id="add-name" maxlength="32" autocomplete="off" spellcheck="false" placeholder="например, ivan-phone" required>
           <button class="primary" type="submit">Создать</button>
         </div>
+        <div class="add-tg-row">
+          <span class="dim" style="font-size: 13px;">Telegram:</span>
+          <button type="button" id="add-tg-btn" class="tag-btn on" title="MTProto Proxy">TG</button>
+          <button type="button" id="add-web-btn" class="tag-btn on" title="Telegram Web Proxy">WEB</button>
+        </div>
         <p id="add-error" class="error" role="alert" hidden></p>
       </form>
       <div id="users-list"></div>
@@ -209,12 +216,14 @@
     <!-- YouTube -->
     <section id="page-youtube" class="page" hidden>
       <h1>YouTube</h1>
-      <p class="lead">Выбери вариант и проверь длинное видео на устройстве. Если тормозит, переключи на следующий.</p>
+      <p class="lead">Выбери вариант или запусти быстрый автоподбор стратегии обхода DPI. Если видео тормозит, можно переключить на следующий способ.</p>
       <p id="yt-error" class="error" role="alert" hidden></p>
       <div class="card opts" id="yt-base"></div>
+      <h2 class="section">Автоподбор стратегии</h2>
+      <div class="card opts" id="yt-auto"></div>
       <h2 class="section">Способы обхода на сервере 1</h2>
       <div id="yt-presets"></div>
-      <h3 class="opt-group">Подбор на этом сервере</h3>
+      <h3 class="opt-group">Глубокий подбор (blockcheck2)</h3>
       <div class="card opts" id="yt-search"></div>
     </section>
 
@@ -292,6 +301,119 @@
       </div>
     </section>
 
+    <!-- Telegram Proxy -->
+    <section id="page-telegram" class="page" hidden>
+      <h1>Telegram</h1>
+      <p class="lead">Встроенный быстрый прокси на базе библиотеки mtg с Fake-TLS и поддержкой Web-моста для официальных клиентов Telegram.</p>
+
+      <div class="grid">
+        <!-- MTProto Proxy Card -->
+        <section class="card col-6 tg-card">
+          <div class="card-head">
+            <div>
+              <h2>MTProto Proxy</h2>
+              <p class="hint">Быстрый прокси с маскировкой Fake-TLS</p>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; flex: none;">
+              <span id="tg-status-tag" class="tag off">Отключен</span>
+              <button id="tg-toggle-btn" class="small" type="button">Включить</button>
+            </div>
+          </div>
+
+          <div id="tg-connect-box" class="tg-connect-card" hidden>
+            <div class="tg-connect-head">
+              <strong style="font-size: 13px;">Ссылка для подключения:</strong>
+              <div class="buttons" style="margin: 0; gap: 6px;">
+                <a id="tg-app-link" class="button primary small" href="#" target="_blank">Открыть</a>
+                <button id="tg-copy-link" class="small" type="button">Копировать</button>
+                <button id="tg-qr-link" class="small" type="button">QR-код</button>
+              </div>
+            </div>
+            <input id="tg-preview-link" readonly onclick="this.select()" spellcheck="false" autocomplete="off" class="tg-link-input" aria-label="Ссылка MTProto">
+          </div>
+
+          <form id="tg-form">
+            <div class="grid" style="gap: 12px; margin-bottom: 12px;">
+              <div class="col-5">
+                <label for="tg-port">Внешний порт</label>
+                <input id="tg-port" type="number" min="1" max="65535" value="8443" required>
+              </div>
+              <div class="col-7">
+                <label for="tg-tls-domain">Домен Fake-TLS</label>
+                <input id="tg-tls-domain" placeholder="ya.ru" autocapitalize="none" autocomplete="off" spellcheck="false" required>
+              </div>
+            </div>
+
+            <label for="tg-secret">Секрет (32 hex-символа)</label>
+            <div class="check-row" style="margin-bottom: 14px;">
+              <input id="tg-secret" style="font-family: monospace; font-size: 13px;" required minlength="32" maxlength="32">
+              <button id="tg-new-secret" type="button" style="white-space: nowrap;">Случайный</button>
+            </div>
+
+            <label>Маршрут к дата-центрам Telegram</label>
+            <div class="pills" role="group" aria-label="Маршрут к Telegram">
+              <button type="button" id="tg-up-direct" data-upstream="direct" aria-pressed="true">Напрямую (сервер 1)</button>
+              <button type="button" id="tg-up-cascade" data-upstream="cascade" aria-pressed="false">Через каскад (сервер 2)</button>
+            </div>
+            <p class="hint" style="margin-top: -6px;">«Через каскад» направляет трафик к серверам Telegram через сервер 2.</p>
+
+            <div class="tg-foot">
+              <span class="dim">Подключений сейчас: <b id="tg-conn" style="color: var(--ink);">0</b></span>
+              <button class="primary" type="submit">Сохранить</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Web Proxy Card -->
+        <section class="card col-6 tg-card">
+          <div class="card-head">
+            <div>
+              <h2>Telegram Web Proxy</h2>
+              <p class="hint">Веб-мост по HTTPS для клиентов Telegram</p>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; flex: none;">
+              <span id="tg-web-status-tag" class="tag off">Отключен</span>
+              <button id="tg-web-toggle-btn" class="small" type="button">Включить</button>
+            </div>
+          </div>
+
+          <div id="tg-web-connect-box" class="tg-connect-card" hidden>
+            <div class="tg-connect-head">
+              <strong style="font-size: 13px;">Ссылка для подключения:</strong>
+              <div class="buttons" style="margin: 0; gap: 6px;">
+                <a id="tg-web-app-link" class="button primary small" href="#" target="_blank">Открыть</a>
+                <button id="tg-web-copy" class="small" type="button">Копировать</button>
+                <button id="tg-web-qr" class="small" type="button">QR-код</button>
+              </div>
+            </div>
+            <input id="tg-web-preview" readonly onclick="this.select()" spellcheck="false" autocomplete="off" class="tg-link-input" aria-label="Веб-ссылка моста">
+          </div>
+
+          <form id="tg-web-form">
+            <div class="grid" style="gap: 12px; margin-bottom: 12px;">
+              <div class="col-8">
+                <label for="tg-web-domain">Публичный домен</label>
+                <input id="tg-web-domain" placeholder="tg.example.com" autocapitalize="none" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="col-4">
+                <label for="tg-web-port">Порт моста</label>
+                <input id="tg-web-port" type="number" min="1" max="65535" value="8085">
+              </div>
+            </div>
+
+            <p class="hint" style="margin-top: 4px;">
+              Укажи публичный домен, направленный на этот порт сервера. Соединение работает поверх HTTPS.
+            </p>
+
+            <div class="tg-foot">
+              <span class="dim">WebSocket / HTTPS мост</span>
+              <button class="primary" type="submit">Сохранить</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>    </section>
+
     <!-- Обновления -->
     <section id="page-updates" class="page" hidden>
       <h1>Обновления</h1>
@@ -327,6 +449,7 @@
 
   <div id="more-sheet" class="sheet" hidden>
     <div class="sheet-box" role="dialog" aria-modal="true" aria-label="Другие разделы">
+      <button class="sheet-item" type="button" data-go="telegram"><svg><use href="#i-tg"/></svg>Telegram</button>
       <button class="sheet-item" type="button" data-go="servers"><svg><use href="#i-server"/></svg>Серверы</button>
       <button class="sheet-item" type="button" data-go="updates"><svg><use href="#i-update"/></svg>Обновления</button>
     </div>
@@ -335,11 +458,43 @@
 
 <dialog id="qr-dialog">
   <h2 id="qr-title"></h2>
-  <img id="qr-img" alt="QR-код настроек">
-  <p class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
+  <div class="pills qr-tabs" role="group" aria-label="Формат подключения">
+    <button type="button" id="qr-tab-wg" aria-pressed="true">WireGuard</button>
+    <button type="button" id="qr-tab-tg" aria-pressed="false">Telegram MTProto</button>
+    <button type="button" id="qr-tab-web" aria-pressed="false">Telegram Web</button>
+  </div>
+  <img id="qr-img" alt="QR-код настроек" onerror="this.hidden=true">
+  <div id="qr-empty-card" class="card" style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px; margin-bottom: 12px; text-align: left;" hidden>
+    <div style="font-weight: 600; font-size: 13.5px; color: var(--warn); margin-bottom: 4px;" id="qr-empty-title">Домен не настроен</div>
+    <p id="qr-empty-desc" style="font-size: 13px; color: var(--muted); margin: 0 0 10px;"></p>
+    <button type="button" id="qr-empty-action" class="small">Настроить домен в Telegram</button>
+  </div>
+  <p id="qr-hint" class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
+  <div id="qr-link-box" class="tg-connect-card" hidden style="margin-top: 10px; margin-bottom: 12px;">
+    <input id="qr-link-input" readonly onclick="this.select()" spellcheck="false" class="tg-link-input" aria-label="Ссылка для подключения">
+  </div>
   <div class="buttons">
+    <a id="qr-tg-connect" class="button primary" href="#" target="_blank" hidden>Подключить в Telegram</a>
+    <button id="qr-tg-copy" type="button" hidden>Копировать ссылку</button>
     <a id="qr-file" class="button" download>Скачать файл</a>
     <button id="qr-close" type="button">Закрыть</button>
+  </div>
+</dialog>
+
+<dialog id="secret-dialog" style="width: min(440px, calc(100vw - 32px));">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+    <h2 style="margin: 0; font-size: 18px;">Секрет: <span id="sec-name"></span></h2>
+  </div>
+  <label for="sec-input">Секрет пользователя (32 hex-символа)</label>
+  <div class="check-row" style="margin-top: 6px; margin-bottom: 12px;">
+    <input id="sec-input" style="font-family: monospace; font-size: 13px;" minlength="32" maxlength="32" required spellcheck="false" autocomplete="off">
+    <button id="sec-random" type="button" style="white-space: nowrap;">Случайный</button>
+  </div>
+  <p class="hint" style="margin-top: 0; margin-bottom: 14px;">При смене секрета старые ссылки пользователя перестанут работать.</p>
+  <p id="sec-error" class="error" role="alert" hidden></p>
+  <div class="buttons" style="justify-content: flex-end; margin-top: 16px;">
+    <button id="sec-close" type="button">Закрыть</button>
+    <button id="sec-save" class="primary" type="button">Сохранить</button>
   </div>
 </dialog>
 
