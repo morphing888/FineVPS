@@ -56,6 +56,8 @@ type UserTelegramInfo struct {
 	MTProtoLink          string `json:"mtproto_link"`
 	WebLink              string `json:"web_link"`
 	BridgeToken          string `json:"bridge_token"`
+	WebDomain            string `json:"web_domain"`
+	WebDomainConfigured  bool   `json:"web_domain_configured"`
 	EntryIP              string `json:"entry_ip"`
 }
 
@@ -309,7 +311,8 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 
 	bridgeToken := ""
 	webLink := ""
-	if s.config.WebDomain != "" && u.Secret != "" {
+	webDomainConfigured := strings.TrimSpace(s.config.WebDomain) != ""
+	if webDomainConfigured && u.Secret != "" {
 		bridgeToken = DeriveBridgeToken(s.config.WebDomain, u.Secret)
 		webLink = fmt.Sprintf("https://%s/?bridge=%s", strings.TrimSpace(s.config.WebDomain), bridgeToken)
 	}
@@ -324,6 +327,8 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 		MTProtoLink:          mtprotoLink,
 		WebLink:              webLink,
 		BridgeToken:          bridgeToken,
+		WebDomain:            s.config.WebDomain,
+		WebDomainConfigured:  webDomainConfigured,
 		EntryIP:              s.entryIP,
 	}
 }

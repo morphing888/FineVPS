@@ -510,10 +510,18 @@ async function switchQRTab(tab) {
   const tgCopy = $("qr-tg-copy");
   const linkBox = $("qr-link-box");
   const linkInp = $("qr-link-input");
+  const emptyCard = $("qr-empty-card");
+  const emptyTitle = $("qr-empty-title");
+  const emptyDesc = $("qr-empty-desc");
+  const emptyAction = $("qr-empty-action");
 
   if (tab === "wg") {
+    img.hidden = false;
     img.src = "api/users/" + enc + "/qr.svg";
+    emptyCard.hidden = true;
+    hint.hidden = false;
     hint.textContent = "Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.";
+    hint.style.color = "";
     fileBtn.hidden = false;
     tgConnect.hidden = true;
     tgCopy.hidden = true;
@@ -521,35 +529,114 @@ async function switchQRTab(tab) {
     return;
   }
 
+  // Load telegram info if not loaded yet
   if (!curQRTGInfo || curQRTGInfo.name !== curQRUser) {
     try {
       curQRTGInfo = await api("users/" + enc + "/telegram");
     } catch (e) {
-      hint.textContent = "Не удалось загрузить данные Telegram: " + e.message;
+      img.hidden = true;
+      emptyCard.hidden = false;
+      emptyTitle.textContent = "Ошибка загрузки";
+      emptyDesc.textContent = "Не удалось загрузить данные Telegram: " + e.message;
+      emptyAction.hidden = true;
+      hint.hidden = true;
+      fileBtn.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+      linkBox.hidden = true;
       return;
     }
   }
 
   fileBtn.hidden = true;
-  linkBox.hidden = false;
 
   if (tab === "tg") {
-    img.src = "api/users/" + enc + "/telegram/qr.svg?type=mtproto";
     const link = curQRTGInfo.mtproto_link || "";
-    linkInp.value = link;
-    hint.textContent = curQRTGInfo.mtproto ? "Отсканируй в Telegram или камерой для быстрого подключения." : "Внимание: MTProto прокси отключен для этого пользователя.";
-    tgConnect.hidden = !link;
-    tgConnect.href = link;
-    tgCopy.hidden = !link;
-    tgCopy.onclick = () => copyText(link, "MTProto ссылка скопирована");
+    if (link && curQRTGInfo.mtproto) {
+      img.hidden = false;
+      img.src = "api/users/" + enc + "/telegram/qr.svg?type=mtproto";
+      emptyCard.hidden = true;
+      hint.hidden = false;
+      hint.textContent = curQRTGInfo.server_mtproto_enabled
+        ? "Отсканируй в Telegram или камерой для быстрого подключения."
+        : "Внимание: MTProto прокси отключен на сервере (раздел Telegram).";
+      hint.style.color = curQRTGInfo.server_mtproto_enabled ? "" : "var(--warn)";
+      linkBox.hidden = false;
+      linkInp.value = link;
+      tgConnect.hidden = false;
+      tgConnect.href = link;
+      tgCopy.hidden = false;
+      tgCopy.onclick = () => copyText(link, "MTProto ссылка скопирована");
+    } else {
+      img.hidden = true;
+      emptyCard.hidden = false;
+      emptyTitle.textContent = "MTProto прокси отключен";
+      emptyDesc.textContent = curQRTGInfo.mtproto
+        ? "MTProto выключен в общих настройках сервера."
+        : "MTProto выключен для этого пользователя. Включи его в настройках Telegram пользователя.";
+      emptyAction.hidden = false;
+      emptyAction.textContent = curQRTGInfo.mtproto ? "Настройки Telegram" : "Настроить пользователя";
+      emptyAction.onclick = () => {
+        $("qr-dialog").close();
+        if (curQRTGInfo.mtproto) go("telegram"); else openTGUser(curQRUser);
+      };
+      hint.hidden = true;
+      linkBox.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+    }
   } else if (tab === "web") {
-    img.src = "api/users/" + enc + "/telegram/qr.svg?type=web";
     const link = curQRTGInfo.web_link || "";
-    linkInp.value = link;
-    hint.textContent = curQRTGInfo.web ? "Ссылка веб-моста для Telegram Web или приложения." : "Внимание: Web-мост отключен для этого пользователя.";
-    tgConnect.hidden = true;
-    tgCopy.hidden = !link;
-    tgCopy.onclick = () => copyText(link, "Web ссылка скопирована");
+    if (link && curQRTGInfo.web && curQRTGInfo.web_domain_configured) {
+      img.hidden = false;
+      img.src = "api/users/" + enc + "/telegram/qr.svg?type=web";
+      emptyCard.hidden = true;
+      hint.hidden = false;
+      hint.textContent = curQRTGInfo.server_web_enabled
+        ? "Ссылка веб-моста для Telegram Web или приложения."
+        : "Внимание: Web / CDN мост выключен в основных настройках Telegram.";
+      hint.style.color = curQRTGInfo.server_web_enabled ? "" : "var(--warn)";
+      linkBox.hidden = false;
+      linkInp.value = link;
+      tgConnect.hidden = true;
+      tgCopy.hidden = false;
+      tgCopy.onclick = () => copyText(link, "Web ссылка скопирована");
+    } else {
+      img.hidden = true;
+      emptyCard.hidden = false;
+      if (!curQRTGInfo.web) {
+        emptyTitle.textContent = "Web-мост отключен для пользователя";
+        emptyDesc.textContent = "Доступ к Web / CDN мосту отключен для этого пользователя.";
+        emptyAction.hidden = false;
+        emptyAction.textContent = "Включить для пользователя";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          openTGUser(curQRUser);
+        };
+      } else if (!curQRTGInfo.web_domain_configured) {
+        emptyTitle.textContent = "Домен CDN не настроен";
+        emptyDesc.textContent = "Чтобы веб-мост заработал, укажи публичный домен CDN в разделе Telegram (например, tg.example.com).";
+        emptyAction.hidden = false;
+        emptyAction.textContent = "Настроить домен в Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      } else {
+        emptyTitle.textContent = "Веб-мост не активен";
+        emptyDesc.textContent = "Включи Web / CDN мост в разделе Telegram.";
+        emptyAction.hidden = false;
+        emptyAction.textContent = "Открыть настройки Telegram";
+        emptyAction.onclick = () => {
+          $("qr-dialog").close();
+          go("telegram");
+        };
+      }
+      hint.hidden = true;
+      linkBox.hidden = true;
+      tgConnect.hidden = true;
+      tgCopy.hidden = true;
+    }
   }
 }
 
@@ -587,7 +674,18 @@ async function openTGUser(name) {
     $("tgu-secret").value = info.secret || "";
     $("tgu-mtproto-link").value = info.mtproto_link || "";
     $("tgu-mtproto-app").href = info.mtproto_link || "#";
-    $("tgu-web-link").value = info.web_link || "";
+
+    if (!info.web_domain_configured) {
+      $("tgu-web-link").value = "";
+      $("tgu-web-link").placeholder = "Домен CDN не настроен в разделе Telegram";
+      $("tgu-web-copy").disabled = true;
+      $("tgu-web-qr").disabled = true;
+    } else {
+      $("tgu-web-link").value = info.web_link || "";
+      $("tgu-web-link").placeholder = "";
+      $("tgu-web-copy").disabled = !info.web_link;
+      $("tgu-web-qr").disabled = !info.web_link;
+    }
 
     if (!info.server_mtproto_enabled) {
       notice.textContent = "Внимание: MTProto прокси отключен в основных настройках Telegram.";
@@ -615,7 +713,11 @@ $("tgu-mtproto-qr").onclick = () => {
 };
 
 $("tgu-web-copy").onclick = () => {
-  copyText($("tgu-web-link").value, "Web ссылка скопирована");
+  if ($("tgu-web-link").value) {
+    copyText($("tgu-web-link").value, "Web ссылка скопирована");
+  } else {
+    toast("Домен CDN не настроен в Telegram");
+  }
 };
 
 $("tgu-web-qr").onclick = () => {

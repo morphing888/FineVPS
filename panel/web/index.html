@@ -468,7 +468,12 @@
     <button type="button" id="qr-tab-tg" aria-pressed="false">Telegram MTProto</button>
     <button type="button" id="qr-tab-web" aria-pressed="false">Telegram Web</button>
   </div>
-  <img id="qr-img" alt="QR-код настроек">
+  <img id="qr-img" alt="QR-код настроек" onerror="this.hidden=true">
+  <div id="qr-empty-card" class="card" style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px; margin-bottom: 12px; text-align: left;" hidden>
+    <div style="font-weight: 600; font-size: 13.5px; color: var(--warn); margin-bottom: 4px;" id="qr-empty-title">Домен CDN не настроен</div>
+    <p id="qr-empty-desc" style="font-size: 13px; color: var(--muted); margin: 0 0 10px;"></p>
+    <button type="button" id="qr-empty-action" class="small">Настроить домен в Telegram</button>
+  </div>
   <p id="qr-hint" class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
   <div id="qr-link-box" class="tg-connect-card" hidden style="margin-top: 10px; margin-bottom: 12px;">
     <input id="qr-link-input" readonly onclick="this.select()" spellcheck="false" class="tg-link-input" aria-label="Ссылка для подключения">
