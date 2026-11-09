@@ -86,56 +86,7 @@ func NewTproxyEngine(stateDir string) *TproxyEngine {
 	return &TproxyEngine{stateDir: stateDir}
 }
 
-// Start applies Web Proxy configuration non-destructively:
-// - If the configuration is identical, Start is an immediate no-op.
-// - If the listening port is unchanged and the engine is already running,
-//   the app server handler is swapped dynamically without closing the TCP listener,
-//   preventing dropped web sessions.
-// - If the port changes or the engine is stopped, candidate validation and candidate
-//   net.Listen are performed prior to stopping the previous instance to ensure rollback safety.
-//
-// Carrier mode: TproxyEngine explicitly configures CarrierHTTPS (HTTPS carrier).
-func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string, profiles []UserProfile) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	host := strings.TrimSpace(publicHost)
-	if host == "" {
-		host = "direct-only.invalid"
-	}
-
-	// 1. No-op check if running and identical
-	if t.running && t.host == host && t.port == port &&
-		t.rawBackendAddr == rawBackendAddr && sameProfiles(t.profiles, profiles) {
-		return nil
-	}
-
-	// 2. Build candidate configuration
-	cfg := config.Defaults()
-	cfg.PublicHostname = host
-	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
-	cfg.AdminListen = "127.0.0.1:0"
-
-	dir := t.stateDir
-	if dir == "" {
-		dir = os.TempDir()
-	}
-	tokenDir := filepath.Join(dir, "telegram")
-	_ = os.MkdirAll(tokenDir, 0o700)
-	tokenPath := filepath.Join(tokenDir, "token.key")
-	if fi, err := os.Stat(tokenPath); err != nil || fi.Size() != 32 {
-		keyBytes := make([]byte, 32)
-		if _, err := rand.Read(keyBytes); err != nil {
-			return fmt.Errorf("generate token key: %w", err)
-		}
-		if err := os.WriteFile(tokenPath, keyBytes, 0o600); err != nil {
-			return fmt.Errorf("write token key: %w", err)
-		}
-	} else if fi.Mode().Perm()&0077 != 0 {
-		_ = os.Chmod(tokenPath, 0o600)
-	}
-	cfg.TokenKeyFile = tokenPath
-
+func buildTproxyProfiles(host, rawBackendAddr string, profiles []UserProfile, defaultLimits config.Limits) ([]config.Profile, error) {
 	var pList []config.Profile
 	seen := make(map[string]bool)
 	for _, prof := range profiles {
@@ -146,7 +97,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 		seen[secHex] = true
 		secretBytes, err := config.DecodeSecret(secHex)
 		if err != nil || len(secretBytes) == 0 {
-			continue
+			return nil, fmt.Errorf("invalid profile secret for %s: %w", prof.Name, err)
 		}
 		capBytes := config.DeriveCapability(host, "", secretBytes)
 		p := config.Profile{
@@ -155,7 +106,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 			CarrierMode: config.CarrierHTTPS,
 			Capability:  capBytes,
 		}
-		p.Limits = p.Limits.WithDefaults(cfg.Limits)
+		p.Limits = p.Limits.WithDefaults(defaultLimits)
 		pList = append(pList, p)
 	}
 
@@ -168,23 +119,97 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 			CarrierMode: config.CarrierHTTPS,
 			Capability:  capBytes,
 		}
-		p.Limits = p.Limits.WithDefaults(cfg.Limits)
+		p.Limits = p.Limits.WithDefaults(defaultLimits)
 		pList = append(pList, p)
+	}
+	return pList, nil
+}
+
+// Start applies Web Proxy configuration non-destructively:
+// - If the configuration is identical, Start is an immediate no-op.
+// - If host, port, and rawBackendAddr are unchanged, profiles are updated in-place
+//   inside the active session.Manager, preserving active sessions of unchanged users
+//   and immediately revoking sessions of removed/rotated users.
+// - If the port is unchanged but host/backend changed, the app handler is swapped
+//   without closing the TCP listener.
+// - If the port changes or the engine is stopped, candidate validation and candidate
+//   net.Listen are performed prior to stopping the previous instance to ensure rollback safety.
+//
+// Carrier mode: TproxyEngine explicitly configures CarrierHTTPS (HTTPS carrier).
+func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string, profiles []UserProfile) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid tproxy port: %d", port)
+	}
+
+	host := strings.TrimSpace(publicHost)
+	if host == "" {
+		host = "direct-only.invalid"
+	}
+
+	// 1. No-op check if running and identical
+	if t.running && t.host == host && t.port == port &&
+		t.rawBackendAddr == rawBackendAddr && sameProfiles(t.profiles, profiles) {
+		return nil
+	}
+
+	cfg := config.Defaults()
+	cfg.PublicHostname = host
+	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
+	cfg.AdminListen = "127.0.0.1:0"
+
+	pList, err := buildTproxyProfiles(host, rawBackendAddr, profiles, cfg.Limits)
+	if err != nil {
+		return err
 	}
 	cfg.Profiles = pList
 
-	// 3. Candidate budget validation
+	// 2. Hot-update profiles in-place when host, port, and rawBackendAddr are unchanged
+	if t.running && t.host == host && t.port == port &&
+		t.rawBackendAddr == rawBackendAddr && t.app != nil {
+		if err := t.app.UpdateProfiles(pList); err != nil {
+			return fmt.Errorf("update tproxy profiles: %w", err)
+		}
+		t.profiles = cloneProfiles(profiles)
+		return nil
+	}
+
+	// 3. Ensure token key file exists for full appserver creation
+	dir := t.stateDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	tokenDir := filepath.Join(dir, "telegram")
+	if err := os.MkdirAll(tokenDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir token dir: %w", err)
+	}
+	tokenPath := filepath.Join(tokenDir, "token.key")
+	if fi, err := os.Stat(tokenPath); err != nil || fi.Size() != 32 {
+		keyBytes := make([]byte, 32)
+		if _, err := rand.Read(keyBytes); err != nil {
+			return fmt.Errorf("generate token key: %w", err)
+		}
+		if err := saveAtomic(tokenPath, keyBytes, 0o600); err != nil {
+			return fmt.Errorf("write token key: %w", err)
+		}
+	} else if fi.Mode().Perm()&0077 != 0 {
+		_ = os.Chmod(tokenPath, 0o600)
+	}
+	cfg.TokenKeyFile = tokenPath
+
+	// 4. Candidate budget validation & app server initialization
 	if err := session.ValidateBudget(cfg); err != nil {
 		return fmt.Errorf("validate tproxy budget: %w", err)
 	}
 
-	// 4. Candidate app server initialization
 	candidateApp, err := appserver.New(cfg)
 	if err != nil {
 		return fmt.Errorf("init tproxy appserver: %w", err)
 	}
 
-	// 5. In-place handler swap if already running on same port
+	// 5. Same port, different host or backend: swap handler on existing TCP listener
 	if t.running && t.port == port && t.server != nil && t.dynHandler != nil {
 		candidateHandler := candidateApp.Handler()
 		t.dynHandler.handler.Store(&candidateHandler)
@@ -196,7 +221,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 		t.profiles = cloneProfiles(profiles)
 
 		if oldApp != nil {
-			go oldApp.Shutdown()
+			oldApp.Shutdown()
 		}
 		return nil
 	}

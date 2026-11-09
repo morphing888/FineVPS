@@ -4,14 +4,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// ErrRecoveryRequired is returned (and wrapped via errors.Join) when an initial
+// runtime apply fails AND the subsequent disk or runtime rollback also fails,
+// leaving persisted state or runtime potentially diverged.
+var ErrRecoveryRequired = errors.New("recovery required: rollback failed after apply error")
 
 type Config struct {
 	Enabled    bool   `json:"enabled"`
@@ -26,23 +34,25 @@ type Config struct {
 }
 
 type StatusResponse struct {
-	Enabled      bool   `json:"enabled"`
-	Port         int    `json:"port"`
-	Secret       string `json:"secret"`
-	TLSDomain    string `json:"tls_domain"`
-	Upstream     string `json:"upstream"`
-	Connections  int64  `json:"connections"`
-	Running      bool   `json:"running"`
-	MTProtoLink  string `json:"mtproto_link"`
-	WebEnabled   bool   `json:"web_enabled"`
-	WebDomain    string `json:"web_domain"`
-	WebPort      int    `json:"web_port"`
-	WebRunning   bool   `json:"web_running"`
-	WebLink      string `json:"web_link"`
-	WebTmeLink   string `json:"web_tme_link"`
-	BridgeLink   string `json:"bridge_link"`
-	BridgeToken  string `json:"bridge_token"`
-	EntryIP      string `json:"entry_ip"`
+	Enabled          bool   `json:"enabled"`
+	Port             int    `json:"port"`
+	Secret           string `json:"secret"`
+	TLSDomain        string `json:"tls_domain"`
+	Upstream         string `json:"upstream"`
+	Connections      int64  `json:"connections"`
+	Running          bool   `json:"running"`
+	MTProtoLink      string `json:"mtproto_link"`
+	WebEnabled       bool   `json:"web_enabled"`
+	WebDomain        string `json:"web_domain"`
+	WebPort          int    `json:"web_port"`
+	WebRunning       bool   `json:"web_running"`
+	WebLink          string `json:"web_link"`
+	WebTmeLink       string `json:"web_tme_link"`
+	BridgeLink       string `json:"bridge_link"`
+	BridgeToken      string `json:"bridge_token"`
+	EntryIP          string `json:"entry_ip"`
+	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	RecoveryError    string `json:"recovery_error,omitempty"`
 }
 
 type UserTelegramConfig struct {
@@ -69,12 +79,19 @@ type UserTelegramInfo struct {
 }
 
 type Service struct {
-	mu       sync.Mutex
-	stateDir string
-	entryIP  string
-	config   Config
-	mtg      *MtgEngine
-	tproxy   *TproxyEngine
+	mu               sync.Mutex
+	stateDir         string
+	entryIP          string
+	config           Config
+	mtg              *MtgEngine
+	tproxy           *TproxyEngine
+	recoveryRequired bool
+	lastRecoveryErr  error
+
+	// Optional fault-injection hooks for testing transactional rollback and recovery signaling.
+	writeFileHook  func(path string, data []byte, perm os.FileMode) error
+	removeFileHook func(path string) error
+	applyHook      func(cfg Config) error
 }
 
 func NewService(stateDir, entryIP string) *Service {
@@ -86,6 +103,12 @@ func NewService(stateDir, entryIP string) *Service {
 	}
 	s.load()
 	return s
+}
+
+func (s *Service) NeedsRecovery() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recoveryRequired, s.lastRecoveryErr
 }
 
 func (s *Service) cfgPath() string {
@@ -106,6 +129,44 @@ func validateSecret(hexKey string) error {
 		return fmt.Errorf("invalid secret hex: %v", err)
 	}
 	return nil
+}
+
+func validateLoopbackRawAddr(rawAddr string, directPort, webPort int) error {
+	if rawAddr == "" {
+		rawAddr = "127.0.0.1:2398"
+	}
+	host, portStr, err := net.SplitHostPort(rawAddr)
+	if err != nil {
+		return fmt.Errorf("invalid raw_addr %q: %w", rawAddr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid raw_addr port in %q", rawAddr)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("raw_addr %q must be a literal loopback address (e.g. 127.0.0.1:port)", rawAddr)
+	}
+	if port == directPort || port == webPort {
+		return fmt.Errorf("raw_addr port %d collides with service port", port)
+	}
+	return nil
+}
+
+func syncParentDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	df, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := df.Sync()
+	closeErr := df.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func saveAtomic(path string, data []byte, perm os.FileMode) error {
@@ -136,7 +197,24 @@ func saveAtomic(path string, data []byte, perm os.FileMode) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return nil
+	return syncParentDir(dir)
+}
+
+func (s *Service) writeFileLocked(path string, data []byte, perm os.FileMode) error {
+	if s.writeFileHook != nil {
+		return s.writeFileHook(path, data, perm)
+	}
+	return saveAtomic(path, data, perm)
+}
+
+func (s *Service) removeFileLocked(path string) error {
+	if s.removeFileHook != nil {
+		return s.removeFileHook(path)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncParentDir(filepath.Dir(path))
 }
 
 func (s *Service) load() {
@@ -148,10 +226,10 @@ func (s *Service) load() {
 			s.config = c
 		}
 	}
-	if s.config.Port <= 0 {
+	if s.config.Port <= 0 || s.config.Port > 65535 {
 		s.config.Port = 8443
 	}
-	if s.config.WebPort <= 0 {
+	if s.config.WebPort <= 0 || s.config.WebPort > 65535 {
 		s.config.WebPort = 8085
 	}
 	if s.config.TLSDomain == "" {
@@ -160,7 +238,12 @@ func (s *Service) load() {
 	if s.config.Upstream == "" {
 		s.config.Upstream = "direct"
 	}
-	if s.config.Secret == "" {
+	if s.config.RawAddr != "" {
+		if validateLoopbackRawAddr(s.config.RawAddr, s.config.Port, s.config.WebPort) != nil {
+			s.config.RawAddr = ""
+		}
+	}
+	if s.config.Secret == "" || validateSecret(s.config.Secret) != nil {
 		sec, _ := randomHexSecret()
 		s.config.Secret = sec
 		_ = s.saveLocked()
@@ -172,31 +255,41 @@ func (s *Service) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return saveAtomic(s.cfgPath(), b, 0o600)
+	return s.writeFileLocked(s.cfgPath(), b, 0o600)
 }
 
-func (s *Service) getUserConfigOnly(name string) (UserTelegramConfig, bool) {
+func (s *Service) readExistingUserLocked(name string) (UserTelegramConfig, bool, error) {
 	p := s.userCfgPath(name)
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return UserTelegramConfig{}, false
+		if errors.Is(err, os.ErrNotExist) {
+			return UserTelegramConfig{}, false, nil
+		}
+		return UserTelegramConfig{}, false, fmt.Errorf("read user %s config: %w", name, err)
 	}
 	var u UserTelegramConfig
-	if err := json.Unmarshal(data, &u); err != nil || u.Secret == "" {
-		return UserTelegramConfig{}, false
+	if err := json.Unmarshal(data, &u); err != nil {
+		return UserTelegramConfig{}, true, fmt.Errorf("parse user %s config: %w", name, err)
 	}
-	return u, true
+	if err := validateSecret(u.Secret); err != nil {
+		return UserTelegramConfig{}, true, fmt.Errorf("validate user %s secret: %w", name, err)
+	}
+	return u, true, nil
 }
 
 func (s *Service) getUserLocked(name string) (UserTelegramConfig, error) {
-	if u, ok := s.getUserConfigOnly(name); ok {
+	u, existed, err := s.readExistingUserLocked(name)
+	if err != nil {
+		return UserTelegramConfig{}, err
+	}
+	if existed {
 		return u, nil
 	}
 	sec, err := randomHexSecret()
 	if err != nil {
 		return UserTelegramConfig{}, err
 	}
-	u := UserTelegramConfig{
+	u = UserTelegramConfig{
 		Secret:  sec,
 		MTProto: true,
 		Web:     true,
@@ -212,13 +305,144 @@ func (s *Service) saveUserLocked(name string, u UserTelegramConfig) error {
 	if err != nil {
 		return err
 	}
-	return saveAtomic(s.userCfgPath(name), b, 0o600)
+	return s.writeFileLocked(s.userCfgPath(name), b, 0o600)
+}
+
+func (s *Service) normalizeAndValidateConfigLocked(newCfg Config) (Config, error) {
+	if newCfg.Port < 0 || newCfg.Port > 65535 {
+		return Config{}, fmt.Errorf("invalid mtproto port: %d (must be 1..65535)", newCfg.Port)
+	}
+	if newCfg.Port == 0 {
+		if newCfg.Enabled {
+			return Config{}, fmt.Errorf("invalid mtproto port: 0 (must be 1..65535)")
+		}
+		if s.config.Port > 0 && s.config.Port <= 65535 {
+			newCfg.Port = s.config.Port
+		} else {
+			newCfg.Port = 8443
+		}
+	}
+
+	if newCfg.WebPort < 0 || newCfg.WebPort > 65535 {
+		return Config{}, fmt.Errorf("invalid web port: %d (must be 1..65535)", newCfg.WebPort)
+	}
+	if newCfg.WebPort == 0 {
+		if newCfg.WebEnabled {
+			return Config{}, fmt.Errorf("invalid web port: 0 (must be 1..65535)")
+		}
+		if s.config.WebPort > 0 && s.config.WebPort <= 65535 {
+			newCfg.WebPort = s.config.WebPort
+		} else {
+			newCfg.WebPort = 8085
+		}
+	}
+
+	if newCfg.Port == newCfg.WebPort {
+		return Config{}, fmt.Errorf("mtproto port and web port cannot be identical (%d)", newCfg.Port)
+	}
+
+	if err := validateLoopbackRawAddr(newCfg.RawAddr, newCfg.Port, newCfg.WebPort); err != nil {
+		return Config{}, err
+	}
+
+	if newCfg.TLSDomain == "" {
+		newCfg.TLSDomain = "ya.ru"
+	}
+	if newCfg.Upstream == "" {
+		newCfg.Upstream = "direct"
+	}
+	if newCfg.Upstream != "direct" && newCfg.Upstream != "cascade" {
+		return Config{}, fmt.Errorf("invalid upstream: %q", newCfg.Upstream)
+	}
+	if newCfg.Secret == "" {
+		newCfg.Secret = s.config.Secret
+	}
+	if err := validateSecret(newCfg.Secret); err != nil {
+		return Config{}, fmt.Errorf("validate secret: %w", err)
+	}
+	return newCfg, nil
+}
+
+// commitWithRollbackLocked executes a transactional disk+runtime update:
+// 1. Captures exact raw bytes of targetPath on disk (distinguishing missing vs I/O error) and s.config.
+// 2. Applies disk mutation (write or remove).
+// 3. Applies runtime configuration if active (or if forceApply is true).
+// 4. On runtime failure, restores disk snapshot and previous runtime state; if either rollback step
+//    fails, sets s.recoveryRequired and returns an error wrapping ErrRecoveryRequired.
+func (s *Service) commitWithRollbackLocked(targetPath string, newBytes []byte, isDelete bool, candidateCfg Config, forceApply bool) error {
+	oldRaw, readErr := os.ReadFile(targetPath)
+	existed := true
+	if readErr != nil {
+		if errors.Is(readErr, os.ErrNotExist) {
+			existed = false
+		} else {
+			return fmt.Errorf("snapshot %s: %w", targetPath, readErr)
+		}
+	}
+
+	oldCfg := s.config
+
+	if isDelete {
+		if err := s.removeFileLocked(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete %s: %w", targetPath, err)
+		}
+	} else {
+		if err := s.writeFileLocked(targetPath, newBytes, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", targetPath, err)
+		}
+	}
+
+	s.config = candidateCfg
+
+	shouldApply := forceApply || candidateCfg.Enabled || candidateCfg.WebEnabled || oldCfg.Enabled || oldCfg.WebEnabled
+	if shouldApply {
+		if applyErr := s.runApplyLocked(candidateCfg); applyErr != nil {
+			var rbDiskErr error
+			if existed {
+				rbDiskErr = s.writeFileLocked(targetPath, oldRaw, 0o600)
+			} else {
+				if rmErr := s.removeFileLocked(targetPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+					rbDiskErr = rmErr
+				}
+			}
+
+			s.config = oldCfg
+			var rbRuntimeErr error
+			if forceApply || oldCfg.Enabled || oldCfg.WebEnabled {
+				rbRuntimeErr = s.runApplyLocked(oldCfg)
+			} else {
+				s.tproxy.Stop()
+				s.mtg.Stop()
+			}
+
+			if rbDiskErr != nil || rbRuntimeErr != nil {
+				recErr := errors.Join(ErrRecoveryRequired, applyErr, rbDiskErr, rbRuntimeErr)
+				s.recoveryRequired = true
+				s.lastRecoveryErr = recErr
+				return recErr
+			}
+			return fmt.Errorf("apply configuration (rolled back): %w", applyErr)
+		}
+	}
+
+	s.recoveryRequired = false
+	s.lastRecoveryErr = nil
+	return nil
+}
+
+func (s *Service) runApplyLocked(cfg Config) error {
+	if s.applyHook != nil {
+		if err := s.applyHook(cfg); err != nil {
+			return err
+		}
+	}
+	return s.applyLocked(cfg)
 }
 
 func (s *Service) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.applyLocked(s.config)
+	return s.runApplyLocked(s.config)
 }
 
 func (s *Service) Stop() {
@@ -231,52 +455,34 @@ func (s *Service) Stop() {
 func (s *Service) Apply(newCfg Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if newCfg.Port <= 0 || newCfg.Port > 65535 {
-		newCfg.Port = 8443
-	}
-	if newCfg.WebPort <= 0 || newCfg.WebPort > 65535 {
-		newCfg.WebPort = 8085
-	}
-	if newCfg.TLSDomain == "" {
-		newCfg.TLSDomain = "ya.ru"
-	}
-	if newCfg.Upstream == "" {
-		newCfg.Upstream = "direct"
-	}
-	if newCfg.Secret == "" {
-		newCfg.Secret = s.config.Secret
-	}
-	if err := validateSecret(newCfg.Secret); err != nil {
-		return fmt.Errorf("validate secret: %w", err)
+
+	validatedCfg, err := s.normalizeAndValidateConfigLocked(newCfg)
+	if err != nil {
+		return err
 	}
 
-	oldCfg := s.config
-
-	if err := s.applyLocked(newCfg); err != nil {
-		_ = s.applyLocked(oldCfg)
-		return fmt.Errorf("apply configuration: %w", err)
+	b, err := json.MarshalIndent(validatedCfg, "", "  ")
+	if err != nil {
+		return err
 	}
 
-	s.config = newCfg
-	if err := s.saveLocked(); err != nil {
-		s.config = oldCfg
-		_ = s.applyLocked(oldCfg)
-		_ = s.saveLocked()
-		return fmt.Errorf("save configuration: %w", err)
-	}
-	return nil
+	return s.commitWithRollbackLocked(s.cfgPath(), b, false, validatedCfg, true)
 }
 
 func (s *Service) ReloadUsers() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.config.Enabled || s.config.WebEnabled {
-		return s.applyLocked(s.config)
+		return s.runApplyLocked(s.config)
 	}
 	return nil
 }
 
 func (s *Service) applyLocked(cfg Config) error {
+	if err := validateLoopbackRawAddr(cfg.RawAddr, cfg.Port, cfg.WebPort); err != nil {
+		return err
+	}
+
 	if !cfg.Enabled && !cfg.WebEnabled {
 		s.tproxy.Stop()
 		s.mtg.Stop()
@@ -298,6 +504,9 @@ func (s *Service) applyLocked(cfg Config) error {
 	var tproxyProfiles []UserProfile
 
 	if cfg.Secret != "" {
+		if err := validateSecret(cfg.Secret); err != nil {
+			return fmt.Errorf("invalid server secret: %w", err)
+		}
 		directSecrets = append(directSecrets, UserSecret{
 			Name:   "default",
 			Secret: cfg.Secret,
@@ -313,33 +522,35 @@ func (s *Service) applyLocked(cfg Config) error {
 	}
 
 	usersDir := filepath.Join(s.stateDir, "users")
-	if entries, err := os.ReadDir(usersDir); err == nil {
-		for _, e := range entries {
-			// Only enabled users (*.peer)
-			if !strings.HasSuffix(e.Name(), ".peer") {
-				continue
-			}
-			userName := strings.TrimSuffix(e.Name(), ".peer")
-			uCfg, err := s.getUserLocked(userName)
-			if err != nil || uCfg.Secret == "" {
-				continue
-			}
-			if uCfg.MTProto {
-				directSecrets = append(directSecrets, UserSecret{
-					Name:   userName,
-					Secret: uCfg.Secret,
-				})
-			}
-			if uCfg.Web {
-				rawSecrets = append(rawSecrets, UserSecret{
-					Name:   userName,
-					Secret: uCfg.Secret,
-				})
-				tproxyProfiles = append(tproxyProfiles, UserProfile{
-					Name:   userName,
-					Secret: uCfg.Secret,
-				})
-			}
+	entries, err := os.ReadDir(usersDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read users dir: %w", err)
+	}
+	for _, e := range entries {
+		// Only enabled users (*.peer)
+		if !strings.HasSuffix(e.Name(), ".peer") {
+			continue
+		}
+		userName := strings.TrimSuffix(e.Name(), ".peer")
+		uCfg, err := s.getUserLocked(userName)
+		if err != nil {
+			return fmt.Errorf("load user %s for apply: %w", userName, err)
+		}
+		if uCfg.MTProto {
+			directSecrets = append(directSecrets, UserSecret{
+				Name:   userName,
+				Secret: uCfg.Secret,
+			})
+		}
+		if uCfg.Web {
+			rawSecrets = append(rawSecrets, UserSecret{
+				Name:   userName,
+				Secret: uCfg.Secret,
+			})
+			tproxyProfiles = append(tproxyProfiles, UserProfile{
+				Name:   userName,
+				Secret: uCfg.Secret,
+			})
 		}
 	}
 
@@ -360,7 +571,6 @@ func (s *Service) applyLocked(cfg Config) error {
 
 	if cfg.WebEnabled {
 		if err := s.tproxy.Start(cfg.WebDomain, cfg.WebPort, rawAddr, tproxyProfiles); err != nil {
-			s.mtg.Stop()
 			return fmt.Errorf("start tproxy engine: %w", err)
 		}
 	} else {
@@ -449,24 +659,14 @@ func (s *Service) SetUser(name string, u UserTelegramConfig) error {
 	} else if err := validateSecret(u.Secret); err != nil {
 		return err
 	}
+	u.Secret = strings.TrimSpace(strings.ToLower(u.Secret))
 
-	oldU, hadOld := s.getUserConfigOnly(name)
-	if err := s.saveUserLocked(name, u); err != nil {
-		return fmt.Errorf("save user %s config: %w", name, err)
+	b, err := json.MarshalIndent(u, "", "  ")
+	if err != nil {
+		return err
 	}
 
-	if s.config.Enabled || s.config.WebEnabled {
-		if err := s.applyLocked(s.config); err != nil {
-			if hadOld {
-				_ = s.saveUserLocked(name, oldU)
-			} else {
-				_ = os.Remove(s.userCfgPath(name))
-			}
-			_ = s.applyLocked(s.config)
-			return fmt.Errorf("apply configuration for user %s: %w", name, err)
-		}
-	}
-	return nil
+	return s.commitWithRollbackLocked(s.userCfgPath(name), b, false, s.config, false)
 }
 
 func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, error) {
@@ -481,15 +681,13 @@ func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, er
 		MTProto: mtproto,
 		Web:     web,
 	}
-	if err := s.saveUserLocked(name, u); err != nil {
-		return UserTelegramInfo{}, fmt.Errorf("save initialized user %s: %w", name, err)
+	b, err := json.MarshalIndent(u, "", "  ")
+	if err != nil {
+		return UserTelegramInfo{}, err
 	}
-	if s.config.Enabled || s.config.WebEnabled {
-		if err := s.applyLocked(s.config); err != nil {
-			_ = os.Remove(s.userCfgPath(name))
-			_ = s.applyLocked(s.config)
-			return UserTelegramInfo{}, fmt.Errorf("apply configuration for user %s: %w", name, err)
-		}
+
+	if err := s.commitWithRollbackLocked(s.userCfgPath(name), b, false, s.config, false); err != nil {
+		return UserTelegramInfo{}, err
 	}
 	return s.buildUserLinks("", name, u), nil
 }
@@ -497,13 +695,14 @@ func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, er
 func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	oldU, hadOld := s.getUserConfigOnly(name)
-	u := oldU
-	if !hadOld {
-		var err error
-		u, err = s.getUserLocked(name)
-		if err != nil {
-			return UserTelegramInfo{}, err
+	u, existed, err := s.readExistingUserLocked(name)
+	if err != nil {
+		return UserTelegramInfo{}, err
+	}
+	if !existed {
+		u = UserTelegramConfig{
+			MTProto: true,
+			Web:     true,
 		}
 	}
 	sec, err := randomHexSecret()
@@ -511,19 +710,14 @@ func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, err
 		return UserTelegramInfo{}, err
 	}
 	u.Secret = sec
-	if err := s.saveUserLocked(name, u); err != nil {
-		return UserTelegramInfo{}, fmt.Errorf("save user %s secret: %w", name, err)
+
+	b, err := json.MarshalIndent(u, "", "  ")
+	if err != nil {
+		return UserTelegramInfo{}, err
 	}
-	if s.config.Enabled || s.config.WebEnabled {
-		if err := s.applyLocked(s.config); err != nil {
-			if hadOld {
-				_ = s.saveUserLocked(name, oldU)
-			} else {
-				_ = os.Remove(s.userCfgPath(name))
-			}
-			_ = s.applyLocked(s.config)
-			return UserTelegramInfo{}, fmt.Errorf("apply new secret for user %s: %w", name, err)
-		}
+
+	if err := s.commitWithRollbackLocked(s.userCfgPath(name), b, false, s.config, false); err != nil {
+		return UserTelegramInfo{}, err
 	}
 	return s.buildUserLinks(currentHost, name, u), nil
 }
@@ -531,43 +725,24 @@ func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, err
 func (s *Service) DeleteUser(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	oldU, hadOld := s.getUserConfigOnly(name)
-	p := s.userCfgPath(name)
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("delete user file %s: %w", p, err)
-	}
-	if s.config.Enabled || s.config.WebEnabled {
-		if err := s.applyLocked(s.config); err != nil {
-			if hadOld {
-				_ = s.saveUserLocked(name, oldU)
-			}
-			_ = s.applyLocked(s.config)
-			return fmt.Errorf("apply after deleting user %s: %w", name, err)
-		}
-	}
-	return nil
+	return s.commitWithRollbackLocked(s.userCfgPath(name), nil, true, s.config, false)
 }
 
 func (s *Service) NewSecret() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	oldSec := s.config.Secret
 	sec, err := randomHexSecret()
 	if err != nil {
 		return "", err
 	}
-	s.config.Secret = sec
-	if err := s.saveLocked(); err != nil {
-		s.config.Secret = oldSec
-		return "", fmt.Errorf("save new secret: %w", err)
+	candCfg := s.config
+	candCfg.Secret = sec
+	b, err := json.MarshalIndent(candCfg, "", "  ")
+	if err != nil {
+		return "", err
 	}
-	if s.config.Enabled || s.config.WebEnabled {
-		if err := s.applyLocked(s.config); err != nil {
-			s.config.Secret = oldSec
-			_ = s.saveLocked()
-			_ = s.applyLocked(s.config)
-			return "", fmt.Errorf("apply new secret: %w", err)
-		}
+	if err := s.commitWithRollbackLocked(s.cfgPath(), b, false, candCfg, false); err != nil {
+		return "", err
 	}
 	return sec, nil
 }
@@ -606,24 +781,31 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 	running := s.config.Enabled && s.mtg.IsRunning()
 	webRunning := s.config.WebEnabled && s.tproxy.IsRunning()
 
+	recErrStr := ""
+	if s.lastRecoveryErr != nil {
+		recErrStr = s.lastRecoveryErr.Error()
+	}
+
 	return StatusResponse{
-		Enabled:     s.config.Enabled,
-		Port:        s.config.Port,
-		Secret:      s.config.Secret,
-		TLSDomain:   s.config.TLSDomain,
-		Upstream:    s.config.Upstream,
-		Connections: s.mtg.ConnectedCount(),
-		Running:     running,
-		MTProtoLink: mtprotoLink,
-		WebEnabled:  s.config.WebEnabled,
-		WebDomain:   s.config.WebDomain,
-		WebPort:     s.config.WebPort,
-		WebRunning:  webRunning,
-		WebLink:     webLink,
-		WebTmeLink:  webTmeLink,
-		BridgeLink:  bridgeLink,
-		BridgeToken: bridgeToken,
-		EntryIP:     s.entryIP,
+		Enabled:          s.config.Enabled,
+		Port:             s.config.Port,
+		Secret:           s.config.Secret,
+		TLSDomain:        s.config.TLSDomain,
+		Upstream:         s.config.Upstream,
+		Connections:      s.mtg.ConnectedCount(),
+		Running:          running,
+		MTProtoLink:      mtprotoLink,
+		WebEnabled:       s.config.WebEnabled,
+		WebDomain:        s.config.WebDomain,
+		WebPort:          s.config.WebPort,
+		WebRunning:       webRunning,
+		WebLink:          webLink,
+		WebTmeLink:       webTmeLink,
+		BridgeLink:       bridgeLink,
+		BridgeToken:      bridgeToken,
+		EntryIP:          s.entryIP,
+		RecoveryRequired: s.recoveryRequired,
+		RecoveryError:    recErrStr,
 	}
 }
 

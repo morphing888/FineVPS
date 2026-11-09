@@ -64,6 +64,42 @@ type Capacity struct {
 	PendingItems         int64
 }
 
+type profileSnapshot struct {
+	profiles           []config.Profile
+	capabilityPrefixes map[uint64]struct{}
+}
+
+func buildProfileSnapshot(profiles []config.Profile, globalLimits config.Limits) *profileSnapshot {
+	cloned := make([]config.Profile, len(profiles))
+	copy(cloned, profiles)
+	prefixes := make(map[uint64]struct{}, len(cloned))
+	for i := range cloned {
+		cloned[i].CarrierMode = cloned[i].CarrierMode.WithDefault()
+		cloned[i].Limits = cloned[i].Limits.WithDefaults(globalLimits)
+		prefixes[capabilityPrefix(cloned[i].Capability[:])] = struct{}{}
+	}
+	return &profileSnapshot{
+		profiles:           cloned,
+		capabilityPrefixes: prefixes,
+	}
+}
+
+func isProfileRetained(oldProf *config.Profile, newProfiles []config.Profile) bool {
+	if oldProf == nil {
+		return false
+	}
+	for i := range newProfiles {
+		p := &newProfiles[i]
+		if p.Name == oldProf.Name &&
+			p.Backend == oldProf.Backend &&
+			p.CarrierMode == oldProf.CarrierMode &&
+			subtle.ConstantTimeCompare(p.Capability[:], oldProf.Capability[:]) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
 type Manager struct {
 	config      config.Config
 	tokenKey    [sha256.Size]byte
@@ -72,7 +108,7 @@ type Manager struct {
 	// prefilter: request scanning compares every window against every profile
 	// otherwise. The map hash is seeded per process and compares whole keys, so
 	// a lookup reveals nothing short of a full 8-byte match.
-	capabilityPrefixes map[uint64]struct{}
+	profilesSnap atomic.Pointer[profileSnapshot]
 
 	mu                   sync.Mutex
 	bootstraps           map[[sha256.Size]byte]*bootstrap
@@ -107,15 +143,12 @@ type Manager struct {
 }
 
 func NewManager(value config.Config, tokenKey [sha256.Size]byte) *Manager {
-	for i := range value.Profiles {
-		value.Profiles[i].CarrierMode = value.Profiles[i].CarrierMode.WithDefault()
-		value.Profiles[i].Limits = value.Profiles[i].Limits.WithDefaults(value.Limits)
-	}
+	snap := buildProfileSnapshot(value.Profiles, value.Limits)
+	value.Profiles = snap.profiles
 	result := &Manager{
 		config:              value,
 		tokenKey:            tokenKey,
 		tokenFilter:         newTokenFilter(tokenKey),
-		capabilityPrefixes:  make(map[uint64]struct{}, len(value.Profiles)),
 		bootstraps:          make(map[[sha256.Size]byte]*bootstrap),
 		bootstrapsPerIP:     make(map[string]int),
 		sessions:            make(map[[sha256.Size]byte]*Session),
@@ -129,9 +162,7 @@ func NewManager(value config.Config, tokenKey [sha256.Size]byte) *Manager {
 		stop:                make(chan struct{}),
 		done:                make(chan struct{}),
 	}
-	for i := range value.Profiles {
-		result.capabilityPrefixes[capabilityPrefix(value.Profiles[i].Capability[:])] = struct{}{}
-	}
+	result.profilesSnap.Store(snap)
 	go result.cleanupLoop()
 	return result
 }
@@ -140,16 +171,67 @@ func capabilityPrefix(value []byte) uint64 {
 	return binary.LittleEndian.Uint64(value)
 }
 
+func (m *Manager) Profiles() []config.Profile {
+	snap := m.profilesSnap.Load()
+	if snap == nil {
+		return nil
+	}
+	return snap.profiles
+}
+
+func (m *Manager) UpdateProfiles(profiles []config.Profile) error {
+	snap := buildProfileSnapshot(profiles, m.config.Limits)
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
+	candidateCfg := m.config
+	candidateCfg.Profiles = snap.profiles
+	if err := ValidateBudget(candidateCfg); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	m.config.Profiles = snap.profiles
+	m.profilesSnap.Store(snap)
+
+	for hash, b := range m.bootstraps {
+		if !b.used && !isProfileRetained(b.profile, snap.profiles) {
+			m.removeBootstrapLocked(hash, b)
+		}
+	}
+
+	var revoked []*Session
+	for _, s := range m.sessions {
+		if !isProfileRetained(s.profile, snap.profiles) {
+			revoked = append(revoked, s)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, s := range revoked {
+		s.Close()
+	}
+	for _, s := range revoked {
+		s.wait()
+	}
+	return nil
+}
+
 func (m *Manager) MatchCapability(value []byte) *config.Profile {
 	if len(value) != sha256.Size {
 		return nil
 	}
-	if _, ok := m.capabilityPrefixes[capabilityPrefix(value)]; !ok {
+	snap := m.profilesSnap.Load()
+	if snap == nil {
+		return nil
+	}
+	if _, ok := snap.capabilityPrefixes[capabilityPrefix(value)]; !ok {
 		return nil
 	}
 	matched := -1
-	for i := range m.config.Profiles {
-		equal := subtle.ConstantTimeCompare(value, m.config.Profiles[i].Capability[:])
+	for i := range snap.profiles {
+		equal := subtle.ConstantTimeCompare(value, snap.profiles[i].Capability[:])
 		if equal == 1 {
 			matched = i
 		}
@@ -157,7 +239,7 @@ func (m *Manager) MatchCapability(value []byte) *config.Profile {
 	if matched < 0 {
 		return nil
 	}
-	return &m.config.Profiles[matched]
+	return &snap.profiles[matched]
 }
 
 func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (string, error) {

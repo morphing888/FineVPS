@@ -66,7 +66,7 @@ func New(value config.Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
-	} else {
+	} else if value.PublicUpstream != "" {
 		target, err := url.Parse(value.PublicUpstream)
 		if err != nil {
 			return nil, err
@@ -130,6 +130,10 @@ func (s *Server) AdminHandler() http.Handler {
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	}
 	return mux
+}
+
+func (s *Server) UpdateProfiles(profiles []config.Profile) error {
+	return s.manager.UpdateProfiles(profiles)
 }
 
 func (s *Server) Shutdown() {
@@ -659,6 +663,10 @@ func (s *Server) servePublic(w http.ResponseWriter, r *http.Request) {
 		s.publicUpstream.ServeHTTP(w, r)
 		return
 	}
+	if s.site == nil {
+		s.serveNotFound(w, r)
+		return
+	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		if r.URL.Path == "/" {
 			s.serveEntry(w, r, s.site.index, http.StatusOK)
@@ -696,7 +704,7 @@ func (s *Server) serveReady(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	for _, profile := range s.config.Profiles {
+	for _, profile := range s.manager.Profiles() {
 		connection, err := net.DialTimeout("tcp", profile.Backend, s.config.Timeouts.BackendDial.Value())
 		if err != nil {
 			http.Error(w, "backend unavailable", http.StatusServiceUnavailable)

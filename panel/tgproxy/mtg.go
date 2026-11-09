@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -114,13 +115,30 @@ type mtgActiveSpec struct {
 	RawEnabled     bool
 }
 
+type rawConnEntry struct {
+	id         uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	clientConn net.Conn
+	dcConn     net.Conn
+	userName   string
+	secretKey  [mtglib.SecretKeyLength]byte
+	authed     bool
+	done       chan struct{}
+}
+
 type rawConnRegistry struct {
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
+	mu      sync.Mutex
+	nextID  uint64
+	entries map[uint64]*rawConnEntry
+	conns   map[net.Conn]struct{}
 }
 
 func newRawConnRegistry() *rawConnRegistry {
-	return &rawConnRegistry{conns: make(map[net.Conn]struct{})}
+	return &rawConnRegistry{
+		entries: make(map[uint64]*rawConnEntry),
+		conns:   make(map[net.Conn]struct{}),
+	}
 }
 
 func (r *rawConnRegistry) count() int {
@@ -132,28 +150,282 @@ func (r *rawConnRegistry) count() int {
 	return len(r.conns)
 }
 
-func (r *rawConnRegistry) add(c net.Conn) func() {
-	if c == nil {
-		return func() {}
+func (r *rawConnRegistry) registerClient(parentCtx context.Context, c net.Conn) (*rawConnEntry, func()) {
+	connCtx, cancel := context.WithCancel(parentCtx)
+	r.mu.Lock()
+	r.nextID++
+	entry := &rawConnEntry{
+		id:         r.nextID,
+		ctx:        connCtx,
+		cancel:     cancel,
+		clientConn: c,
+		done:       make(chan struct{}),
+	}
+	r.entries[entry.id] = entry
+	if c != nil {
+		r.conns[c] = struct{}{}
+	}
+	r.mu.Unlock()
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			cancel()
+			r.mu.Lock()
+			delete(r.entries, entry.id)
+			if entry.clientConn != nil {
+				delete(r.conns, entry.clientConn)
+			}
+			dc := entry.dcConn
+			if dc != nil {
+				delete(r.conns, dc)
+			}
+			r.mu.Unlock()
+			if entry.clientConn != nil {
+				_ = entry.clientConn.Close()
+			}
+			if dc != nil {
+				_ = dc.Close()
+			}
+			close(entry.done)
+		})
+	}
+	return entry, cleanup
+}
+
+func isRawSecretAllowed(userName string, secretKey [mtglib.SecretKeyLength]byte, allowed []mtgParsedSecret) bool {
+	if userName == "dummy" {
+		return false
+	}
+	for _, s := range allowed {
+		if s.Name == "dummy" {
+			continue
+		}
+		if s.Name == userName && subtle.ConstantTimeCompare(s.Secret.Key[:], secretKey[:]) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *rawConnRegistry) authenticate(entry *rawConnEntry, userName string, secretKey [mtglib.SecretKeyLength]byte, allowed []mtgParsedSecret) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.entries[entry.id]; !ok || entry.ctx.Err() != nil {
+		return false
+	}
+	if !isRawSecretAllowed(userName, secretKey, allowed) {
+		entry.cancel()
+		if entry.clientConn != nil {
+			_ = entry.clientConn.Close()
+		}
+		return false
+	}
+	entry.userName = userName
+	entry.secretKey = secretKey
+	entry.authed = true
+	return true
+}
+
+func (r *rawConnRegistry) attachDC(entry *rawConnEntry, dcConn net.Conn) bool {
+	if dcConn == nil {
+		return false
 	}
 	r.mu.Lock()
-	r.conns[c] = struct{}{}
-	r.mu.Unlock()
-	return func() {
-		r.mu.Lock()
-		delete(r.conns, c)
+	if _, ok := r.entries[entry.id]; !ok || entry.ctx.Err() != nil {
 		r.mu.Unlock()
-		_ = c.Close()
+		_ = dcConn.Close()
+		return false
+	}
+	entry.dcConn = dcConn
+	r.conns[dcConn] = struct{}{}
+	r.mu.Unlock()
+	return true
+}
+
+func (r *rawConnRegistry) revokeUnmatched(allowed []mtgParsedSecret) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	var waitChans []chan struct{}
+	for _, entry := range r.entries {
+		if entry.authed && !isRawSecretAllowed(entry.userName, entry.secretKey, allowed) {
+			entry.cancel()
+			if entry.clientConn != nil {
+				_ = entry.clientConn.Close()
+			}
+			if entry.dcConn != nil {
+				_ = entry.dcConn.Close()
+			}
+			waitChans = append(waitChans, entry.done)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, ch := range waitChans {
+		<-ch
 	}
 }
 
 func (r *rawConnRegistry) closeAll() {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	for _, entry := range r.entries {
+		entry.cancel()
+		if entry.clientConn != nil {
+			_ = entry.clientConn.Close()
+		}
+		if entry.dcConn != nil {
+			_ = entry.dcConn.Close()
+		}
+	}
 	for c := range r.conns {
 		_ = c.Close()
 	}
-	r.conns = make(map[net.Conn]struct{})
+	r.mu.Unlock()
+}
+
+// subListener feeds accepted connections from a persistent OS net.Listener into a
+// generation-specific mtglib.Proxy so that updating secrets/domains on the same
+// DirectPort never closes or unbinds the underlying TCP socket.
+type subListener struct {
+	addr    net.Addr
+	ch      chan net.Conn
+	closed  chan struct{}
+	entered chan struct{}
+	once    sync.Once
+	entOnce sync.Once
+}
+
+func newSubListener(addr net.Addr) *subListener {
+	return &subListener{
+		addr:    addr,
+		ch:      make(chan net.Conn, 64),
+		closed:  make(chan struct{}),
+		entered: make(chan struct{}),
+	}
+}
+
+func (s *subListener) Accept() (net.Conn, error) {
+	s.entOnce.Do(func() {
+		close(s.entered)
+	})
+	select {
+	case c, ok := <-s.ch:
+		if !ok {
+			return nil, net.ErrClosed
+		}
+		return c, nil
+	case <-s.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (s *subListener) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+		for {
+			select {
+			case c := <-s.ch:
+				if c != nil {
+					_ = c.Close()
+				}
+			default:
+				return
+			}
+		}
+	})
+	return nil
+}
+
+func (s *subListener) Addr() net.Addr {
+	return s.addr
+}
+
+func (s *subListener) offer(c net.Conn) bool {
+	select {
+	case <-s.closed:
+		return false
+	default:
+	}
+	select {
+	case s.ch <- c:
+		return true
+	case <-s.closed:
+		return false
+	}
+}
+
+type directDispatcher struct {
+	lis    net.Listener
+	port   int
+	target atomic.Pointer[subListener]
+	wg     sync.WaitGroup
+}
+
+func newDirectDispatcher(lis net.Listener, port int) *directDispatcher {
+	d := &directDispatcher{
+		lis:  lis,
+		port: port,
+	}
+	d.wg.Add(1)
+	go d.acceptLoop()
+	return d
+}
+
+func (d *directDispatcher) acceptLoop() {
+	defer d.wg.Done()
+	for {
+		c, err := d.lis.Accept()
+		if err != nil {
+			return
+		}
+		sub := d.target.Load()
+		if sub == nil || !sub.offer(c) {
+			_ = c.Close()
+		}
+	}
+}
+
+func (d *directDispatcher) close() {
+	sub := d.target.Swap(nil)
+	if sub != nil {
+		_ = sub.Close()
+	}
+	if d.lis != nil {
+		_ = d.lis.Close()
+	}
+	d.wg.Wait()
+}
+
+type directProxyGen struct {
+	subLis *subListener
+	proxy  *mtglib.Proxy
+	router *mtgProxyEventRouter
+	wg     sync.WaitGroup
+}
+
+func (dg *directProxyGen) stop() {
+	if dg == nil {
+		return
+	}
+	if dg.subLis != nil {
+		// Ensure Serve() has executed streamWaitGroup.Add(1) and entered Accept()
+		// before calling Shutdown(), preventing streamWaitGroup.Add(1) from racing
+		// with streamWaitGroup.Wait() inside mtglib.Proxy.Shutdown().
+		<-dg.subLis.entered
+		_ = dg.subLis.Close()
+	}
+	if dg.proxy != nil {
+		dg.proxy.Shutdown()
+	}
+	if dg.router != nil {
+		dg.router.CloseAndDrain()
+	}
+	dg.wg.Wait()
 }
 
 type mtgGeneration struct {
@@ -164,18 +436,19 @@ type mtgGeneration struct {
 	directLis  net.Listener
 	rawLis     net.Listener
 	proxy      *mtglib.Proxy
-	rawSecrets []mtgParsedSecret
+	rawSecrets atomic.Pointer[[]mtgParsedSecret]
 	wg         sync.WaitGroup
 }
 
 type MtgEngine struct {
 	mu           sync.Mutex
+	directDisp   *directDispatcher
+	directGen    *directProxyGen
 	currentGen   *mtgGeneration
 	active       mtgActiveSpec
 	connected    atomic.Int64
 	userStatsMu  sync.RWMutex
 	userStats    map[string]*UserStats
-	streamUsers  sync.Map
 	genSeq       uint64
 	fakeDCDialer func(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -243,19 +516,25 @@ func (e *MtgEngine) GetUserStats() map[string]UserStats {
 type mtgProxyEventRouter struct {
 	engine            *MtgEngine
 	directSecretNames []string
+	streamUsers       sync.Map // streamID -> userName
 	dcStreams         sync.Map // streamID -> struct{}
+	closed            atomic.Bool
 }
 
 func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 	switch e := evt.(type) {
 	case mtglib.EventClientMatched:
+		if r.closed.Load() {
+			return
+		}
 		if e.SecretIdx >= 0 && e.SecretIdx < len(r.directSecretNames) {
 			user := r.directSecretNames[e.SecretIdx]
-			r.engine.streamUsers.Store(e.StreamID(), user)
-			r.engine.recordConn(user, 1, false)
+			if _, loaded := r.streamUsers.LoadOrStore(e.StreamID(), user); !loaded {
+				r.engine.recordConn(user, 1, false)
+			}
 		}
 	case mtglib.EventTraffic:
-		if val, ok := r.engine.streamUsers.Load(e.StreamID()); ok {
+		if val, ok := r.streamUsers.Load(e.StreamID()); ok {
 			user := val.(string)
 			if e.IsRead {
 				r.engine.recordTraffic(user, 0, uint64(e.Traffic))
@@ -264,11 +543,14 @@ func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 			}
 		}
 	case mtglib.EventConnectedToDC:
+		if r.closed.Load() {
+			return
+		}
 		if _, loaded := r.dcStreams.LoadOrStore(e.StreamID(), struct{}{}); !loaded {
 			r.engine.connected.Add(1)
 		}
 	case mtglib.EventFinish:
-		if val, ok := r.engine.streamUsers.LoadAndDelete(e.StreamID()); ok {
+		if val, ok := r.streamUsers.LoadAndDelete(e.StreamID()); ok {
 			user := val.(string)
 			r.engine.recordConn(user, -1, false)
 		}
@@ -278,6 +560,24 @@ func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 			}
 		}
 	}
+}
+
+func (r *mtgProxyEventRouter) CloseAndDrain() {
+	r.closed.Store(true)
+	r.streamUsers.Range(func(key, _ any) bool {
+		if val, ok := r.streamUsers.LoadAndDelete(key); ok {
+			r.engine.recordConn(val.(string), -1, false)
+		}
+		return true
+	})
+	r.dcStreams.Range(func(key, _ any) bool {
+		if _, ok := r.dcStreams.LoadAndDelete(key); ok {
+			if v := r.engine.connected.Add(-1); v < 0 {
+				r.engine.connected.Store(0)
+			}
+		}
+		return true
+	})
 }
 
 func (r *mtgProxyEventRouter) Shutdown() {}
@@ -313,10 +613,10 @@ func (e *MtgEngine) ConnectedCount() int64 {
 func (e *MtgEngine) IsRunning() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.currentGen != nil && e.currentGen.directLis != nil
+	return e.directDisp != nil && e.directGen != nil
 }
 
-func (e *MtgEngine) buildCandidateLocked(spec mtgActiveSpec) (*mtgGeneration, error) {
+func (e *MtgEngine) parseCandidateSecrets(spec mtgActiveSpec) ([]mtglib.Secret, []string, []mtgParsedSecret, error) {
 	var directSecrets []mtglib.Secret
 	var directNames []string
 	seenDirect := make(map[string]bool)
@@ -328,7 +628,7 @@ func (e *MtgEngine) buildCandidateLocked(spec mtgActiveSpec) (*mtgGeneration, er
 		seenDirect[s] = true
 		sec0, err := parseMtgSecret(s, spec.TlsDomain)
 		if err != nil {
-			return nil, fmt.Errorf("invalid direct secret for %s: %w", us.Name, err)
+			return nil, nil, nil, fmt.Errorf("invalid direct secret for %s: %w", us.Name, err)
 		}
 		directSecrets = append(directSecrets, sec0)
 		directNames = append(directNames, us.Name)
@@ -336,11 +636,11 @@ func (e *MtgEngine) buildCandidateLocked(spec mtgActiveSpec) (*mtgGeneration, er
 	if len(directSecrets) == 0 {
 		dummyHex, err := randomHexSecret()
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		secDummy, err := parseMtgSecret(dummyHex, spec.TlsDomain)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		directSecrets = append(directSecrets, secDummy)
 		directNames = append(directNames, "dummy")
@@ -356,23 +656,30 @@ func (e *MtgEngine) buildCandidateLocked(spec mtgActiveSpec) (*mtgGeneration, er
 		seenRaw[s] = true
 		sec0, err := parseMtgSecret(s, spec.TlsDomain)
 		if err != nil {
-			return nil, fmt.Errorf("invalid raw secret for %s: %w", us.Name, err)
+			return nil, nil, nil, fmt.Errorf("invalid raw secret for %s: %w", us.Name, err)
 		}
 		rawSecrets = append(rawSecrets, mtgParsedSecret{Name: us.Name, Secret: sec0})
 	}
 	if len(rawSecrets) == 0 {
-		dummyHex, _ := randomHexSecret()
-		secDummy, _ := parseMtgSecret(dummyHex, spec.TlsDomain)
+		dummyHex, err := randomHexSecret()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		secDummy, err := parseMtgSecret(dummyHex, spec.TlsDomain)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		rawSecrets = append(rawSecrets, mtgParsedSecret{Name: "dummy", Secret: secDummy})
 	}
+	return directSecrets, directNames, rawSecrets, nil
+}
 
+func (e *MtgEngine) buildDirectProxyLocked(spec mtgActiveSpec, directSecrets []mtglib.Secret, directNames []string, addr net.Addr) (*directProxyGen, error) {
 	ntw := newMtgDeviceNetwork(spec.UpstreamDevice)
-
 	router := &mtgProxyEventRouter{
 		engine:            e,
 		directSecretNames: directNames,
 	}
-
 	proxy, err := mtglib.NewProxy(mtglib.ProxyOpts{
 		Secrets:                  directSecrets,
 		Network:                  ntw,
@@ -388,147 +695,201 @@ func (e *MtgEngine) buildCandidateLocked(spec mtgActiveSpec) (*mtgGeneration, er
 	if err != nil {
 		return nil, fmt.Errorf("create mtg proxy: %w", err)
 	}
-
-	e.genSeq++
-	ctx, cancel := context.WithCancel(context.Background())
-	gen := &mtgGeneration{
-		id:         e.genSeq,
-		ctx:        ctx,
-		cancel:     cancel,
-		registry:   newRawConnRegistry(),
-		proxy:      proxy,
-		rawSecrets: rawSecrets,
+	sub := newSubListener(addr)
+	dg := &directProxyGen{
+		subLis: sub,
+		proxy:  proxy,
+		router: router,
 	}
-
-	return gen, nil
+	return dg, nil
 }
 
 func (e *MtgEngine) Apply(spec mtgActiveSpec) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Always pre-validate candidate secrets even if disabling or hot-updating
+	directSecrets, directNames, rawSecrets, err := e.parseCandidateSecrets(spec)
+	if err != nil {
+		return err
+	}
+
 	if !spec.DirectEnabled && !spec.RawEnabled {
 		e.stopLocked()
 		return nil
 	}
 
-	// 1. Check if identical (no-op)
-	if e.currentGen != nil &&
-		slices.Equal(e.active.DirectSecrets, spec.DirectSecrets) &&
-		slices.Equal(e.active.RawSecrets, spec.RawSecrets) &&
-		e.active.TlsDomain == spec.TlsDomain &&
-		e.active.UpstreamDevice == spec.UpstreamDevice &&
-		e.active.DirectPort == spec.DirectPort &&
-		e.active.RawAddr == spec.RawAddr &&
-		(spec.DirectEnabled == (e.currentGen.directLis != nil)) &&
-		(spec.RawEnabled == (e.currentGen.rawLis != nil)) {
+	directRunning := e.directDisp != nil && e.directGen != nil
+	rawRunning := e.currentGen != nil && e.currentGen.rawLis != nil
+
+	// 1. Check if completely identical (no-op)
+	if (spec.DirectEnabled == directRunning) &&
+		(spec.RawEnabled == rawRunning) &&
+		(!spec.DirectEnabled || (e.active.DirectPort == spec.DirectPort &&
+			e.active.TlsDomain == spec.TlsDomain &&
+			e.active.UpstreamDevice == spec.UpstreamDevice &&
+			slices.Equal(e.active.DirectSecrets, spec.DirectSecrets))) &&
+		(!spec.RawEnabled || (e.active.RawAddr == spec.RawAddr &&
+			e.active.UpstreamDevice == spec.UpstreamDevice &&
+			slices.Equal(e.active.RawSecrets, spec.RawSecrets))) {
 		return nil
 	}
 
-	// 2. Pre-validate secrets and build candidate proxy
-	candidateGen, err := e.buildCandidateLocked(spec)
-	if err != nil {
-		return err
-	}
+	// Determine what needs to be created/updated
+	needNewDirectPort := spec.DirectEnabled && (!directRunning || e.directDisp.port != spec.DirectPort)
+	needNewDirectProxy := spec.DirectEnabled && (needNewDirectPort ||
+		e.active.TlsDomain != spec.TlsDomain ||
+		e.active.UpstreamDevice != spec.UpstreamDevice ||
+		!slices.Equal(e.active.DirectSecrets, spec.DirectSecrets))
 
-	// 3. Port check if port changed
-	var candidateDirectLis net.Listener
-	var candidateRawLis net.Listener
+	needNewRawLis := spec.RawEnabled && (!rawRunning ||
+		e.active.RawAddr != spec.RawAddr ||
+		e.active.UpstreamDevice != spec.UpstreamDevice)
+	needHotUpdateRawSecrets := spec.RawEnabled && !needNewRawLis &&
+		!slices.Equal(e.active.RawSecrets, spec.RawSecrets)
 
-	portChanged := e.currentGen == nil || e.active.DirectPort != spec.DirectPort || e.currentGen.directLis == nil
-	if spec.DirectEnabled && portChanged {
+	// 2. Pre-bind any new listeners and pre-create candidate direct proxy BEFORE touching running state
+	var candDirectLis net.Listener
+	if needNewDirectPort {
 		directAddr := fmt.Sprintf("0.0.0.0:%d", spec.DirectPort)
 		l, err := net.Listen("tcp", directAddr)
 		if err != nil {
-			candidateGen.cancel()
-			candidateGen.proxy.Shutdown()
 			return fmt.Errorf("listen mtg direct on %s: %w", directAddr, err)
 		}
-		candidateDirectLis = l
+		candDirectLis = l
 	}
 
-	rawChanged := e.currentGen == nil || e.active.RawAddr != spec.RawAddr || e.currentGen.rawLis == nil
-	if spec.RawEnabled && rawChanged {
+	var candRawLis net.Listener
+	if needNewRawLis {
 		l, err := net.Listen("tcp", spec.RawAddr)
 		if err != nil {
-			if candidateDirectLis != nil {
-				_ = candidateDirectLis.Close()
+			if candDirectLis != nil {
+				_ = candDirectLis.Close()
 			}
-			candidateGen.cancel()
-			candidateGen.proxy.Shutdown()
 			return fmt.Errorf("listen mtg raw on %s: %w", spec.RawAddr, err)
 		}
-		candidateRawLis = l
+		candRawLis = l
 	}
 
-	// 4. Safely stop old generation
-	if e.currentGen != nil {
-		oldGen := e.currentGen
-		e.currentGen = nil
-		oldGen.cancel()
-
-		if oldGen.directLis != nil && candidateDirectLis == nil && spec.DirectEnabled {
-			_ = oldGen.directLis.Close()
-			l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", spec.DirectPort))
-			if err != nil {
-				candidateGen.cancel()
-				candidateGen.proxy.Shutdown()
-				oldGen.registry.closeAll()
-				oldGen.proxy.Shutdown()
-				return fmt.Errorf("rebind mtg direct on port %d: %w", spec.DirectPort, err)
+	var candDirectGen *directProxyGen
+	if needNewDirectProxy {
+		var addr net.Addr
+		if candDirectLis != nil {
+			addr = candDirectLis.Addr()
+		} else if e.directDisp != nil && e.directDisp.lis != nil {
+			addr = e.directDisp.lis.Addr()
+		}
+		dg, err := e.buildDirectProxyLocked(spec, directSecrets, directNames, addr)
+		if err != nil {
+			if candDirectLis != nil {
+				_ = candDirectLis.Close()
 			}
-			candidateDirectLis = l
-		} else if oldGen.directLis != nil {
-			_ = oldGen.directLis.Close()
-		}
-
-		if oldGen.rawLis != nil && candidateRawLis == nil && spec.RawEnabled {
-			_ = oldGen.rawLis.Close()
-			l, err := net.Listen("tcp", spec.RawAddr)
-			if err != nil {
-				if candidateDirectLis != nil {
-					_ = candidateDirectLis.Close()
-				}
-				candidateGen.cancel()
-				candidateGen.proxy.Shutdown()
-				oldGen.registry.closeAll()
-				oldGen.proxy.Shutdown()
-				return fmt.Errorf("rebind mtg raw on %s: %w", spec.RawAddr, err)
+			if candRawLis != nil {
+				_ = candRawLis.Close()
 			}
-			candidateRawLis = l
-		} else if oldGen.rawLis != nil {
-			_ = oldGen.rawLis.Close()
+			return err
 		}
+		candDirectGen = dg
+	}
 
-		oldGen.registry.closeAll()
-		if oldGen.proxy != nil {
-			oldGen.proxy.Shutdown()
+	// 3. Apply Direct subsystem changes (all fallible steps already succeeded!)
+	if !spec.DirectEnabled {
+		if e.directGen != nil {
+			e.directGen.stop()
+			e.directGen = nil
+		}
+		if e.directDisp != nil {
+			e.directDisp.close()
+			e.directDisp = nil
+		}
+	} else if needNewDirectProxy {
+		oldDirectGen := e.directGen
+		candDirectGen.wg.Add(1)
+		go func(dg *directProxyGen) {
+			defer dg.wg.Done()
+			_ = dg.proxy.Serve(dg.subLis)
+		}(candDirectGen)
+		<-candDirectGen.subLis.entered
+
+		if needNewDirectPort {
+			oldDisp := e.directDisp
+			newDisp := newDirectDispatcher(candDirectLis, spec.DirectPort)
+			newDisp.target.Store(candDirectGen.subLis)
+			e.directDisp = newDisp
+			e.directGen = candDirectGen
+			if oldDisp != nil {
+				oldDisp.close()
+			}
+		} else {
+			// Same DirectPort: atomically swap subListener without closing OS TCP socket!
+			e.directDisp.target.Store(candDirectGen.subLis)
+			e.directGen = candDirectGen
+		}
+		if oldDirectGen != nil {
+			oldDirectGen.stop()
 		}
 	}
 
-	candidateGen.directLis = candidateDirectLis
-	candidateGen.rawLis = candidateRawLis
-	e.currentGen = candidateGen
-	e.active = spec
+	// 4. Apply Raw subsystem changes
+	if !spec.RawEnabled {
+		e.stopRawGenLocked()
+	} else if needNewRawLis {
+		e.stopRawGenLocked()
+		e.genSeq++
+		ctx, cancel := context.WithCancel(context.Background())
+		rawGen := &mtgGeneration{
+			id:       e.genSeq,
+			ctx:      ctx,
+			cancel:   cancel,
+			registry: newRawConnRegistry(),
+			rawLis:   candRawLis,
+		}
+		if e.directDisp != nil {
+			rawGen.directLis = e.directDisp.lis
+		}
+		rawSecretsCopy := slices.Clone(rawSecrets)
+		rawGen.rawSecrets.Store(&rawSecretsCopy)
+		e.currentGen = rawGen
 
-	if candidateGen.directLis != nil {
-		candidateGen.wg.Add(1)
-		go func(p *mtglib.Proxy, l net.Listener, g *mtgGeneration) {
-			defer g.wg.Done()
-			_ = p.Serve(l)
-		}(candidateGen.proxy, candidateGen.directLis, candidateGen)
-	}
-
-	if candidateGen.rawLis != nil {
 		ntw := newMtgDeviceNetwork(spec.UpstreamDevice)
-		candidateGen.wg.Add(1)
+		rawGen.wg.Add(1)
 		go func(g *mtgGeneration) {
 			defer g.wg.Done()
-			e.serveRawLoop(g, ntw, candidateGen.rawSecrets)
-		}(candidateGen)
+			e.serveRawLoop(g, ntw)
+		}(rawGen)
+	} else if needHotUpdateRawSecrets && e.currentGen != nil {
+		// In-place secret update: keep rawLis and unchanged users' connections alive,
+		// immediately revoke removed/changed users' connections!
+		rawSecretsCopy := slices.Clone(rawSecrets)
+		e.currentGen.rawSecrets.Store(&rawSecretsCopy)
+		e.currentGen.registry.revokeUnmatched(rawSecretsCopy)
 	}
 
+	if e.currentGen != nil {
+		if e.directDisp != nil {
+			e.currentGen.directLis = e.directDisp.lis
+		} else {
+			e.currentGen.directLis = nil
+		}
+	}
+
+	e.active = spec
 	return nil
+}
+
+func (e *MtgEngine) stopRawGenLocked() {
+	if e.currentGen == nil {
+		return
+	}
+	gen := e.currentGen
+	e.currentGen = nil
+	gen.cancel()
+	if gen.rawLis != nil {
+		_ = gen.rawLis.Close()
+		gen.rawLis = nil
+	}
+	gen.registry.closeAll()
+	gen.wg.Wait()
 }
 
 func (e *MtgEngine) Stop() {
@@ -538,43 +899,19 @@ func (e *MtgEngine) Stop() {
 }
 
 func (e *MtgEngine) stopLocked() {
-	if e.currentGen == nil {
-		e.active = mtgActiveSpec{}
-		return
+	if e.directGen != nil {
+		e.directGen.stop()
+		e.directGen = nil
 	}
-	gen := e.currentGen
-	e.currentGen = nil
-	gen.cancel()
-
-	if gen.directLis != nil {
-		_ = gen.directLis.Close()
-		gen.directLis = nil
+	if e.directDisp != nil {
+		e.directDisp.close()
+		e.directDisp = nil
 	}
-	if gen.rawLis != nil {
-		_ = gen.rawLis.Close()
-		gen.rawLis = nil
-	}
-	gen.registry.closeAll()
-
-	if gen.proxy != nil {
-		gen.proxy.Shutdown()
-		gen.proxy = nil
-	}
-
-	done := make(chan struct{})
-	go func() {
-		gen.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-	}
-
+	e.stopRawGenLocked()
 	e.active = mtgActiveSpec{}
 }
 
-func (e *MtgEngine) serveRawLoop(gen *mtgGeneration, ntw *mtgDeviceNetwork, rawSecrets []mtgParsedSecret) {
+func (e *MtgEngine) serveRawLoop(gen *mtgGeneration, ntw *mtgDeviceNetwork) {
 	for {
 		conn, err := gen.rawLis.Accept()
 		if err != nil {
@@ -587,7 +924,7 @@ func (e *MtgEngine) serveRawLoop(gen *mtgGeneration, ntw *mtgDeviceNetwork, rawS
 		gen.wg.Add(1)
 		go func(c net.Conn) {
 			defer gen.wg.Done()
-			e.handleRawConn(gen, c, ntw, rawSecrets)
+			e.handleRawConn(gen, c, ntw)
 		}(conn)
 	}
 }
@@ -600,9 +937,11 @@ var (
 
 type parsedObfuscated2 struct {
 	userName   string
+	secretKey  [mtglib.SecretKeyLength]byte
 	secretIdx  int
 	connType   [4]byte
 	dcBytes    [2]byte
+	dcRaw      int
 	dc         int
 	recvCipher cipher.Stream
 	sendCipher cipher.Stream
@@ -614,60 +953,63 @@ func parseObfuscated2Frame(frame []byte, secrets []mtgParsedSecret) parsedObfusc
 		return parsedObfuscated2{}
 	}
 	for idx, s := range secrets {
+		if s.Name == "dummy" {
+			continue
+		}
 		sec := s.Secret
 		h := sha256.New()
 		h.Write(frame[8:40])
 		h.Write(sec.Key[:])
-		derived := h.Sum(nil)
-		block, err := aes.NewCipher(derived)
+		recvKey := h.Sum(nil)
+
+		recvBlock, err := aes.NewCipher(recvKey)
 		if err != nil {
 			continue
 		}
-		stream := cipher.NewCTR(block, frame[40:56])
-		var decTail [8]byte
-		stream.XORKeyStream(decTail[:], frame[56:64])
+		var dec [64]byte
+		recvCipher := cipher.NewCTR(recvBlock, frame[40:56])
+		recvCipher.XORKeyStream(dec[:], frame[:64])
 
 		var connType [4]byte
-		copy(connType[:], decTail[0:4])
-		switch connType {
-		case mtgConnectionTypeSecure, mtgConnectionTypeIntermediate, mtgConnectionTypeAbridged:
-		default:
+		copy(connType[:], dec[56:60])
+		isSecure := subtle.ConstantTimeCompare(connType[:], mtgConnectionTypeSecure[:]) == 1
+		isInterm := subtle.ConstantTimeCompare(connType[:], mtgConnectionTypeIntermediate[:]) == 1
+		isAbridg := subtle.ConstantTimeCompare(connType[:], mtgConnectionTypeAbridged[:]) == 1
+		if !isSecure && !isInterm && !isAbridg {
 			continue
 		}
 
+		var rev [48]byte
+		copy(rev[:], frame[8:56])
+		slices.Reverse(rev[:])
+		h.Reset()
+		h.Write(rev[:32])
+		h.Write(sec.Key[:])
+		sendKey := h.Sum(nil)
+		sendBlock, err := aes.NewCipher(sendKey)
+		if err != nil {
+			continue
+		}
+		sendCipher := cipher.NewCTR(sendBlock, rev[32:48])
+
 		var dcBytes [2]byte
-		copy(dcBytes[:], decTail[4:6])
-		dc := int(binary.LittleEndian.Uint16(dcBytes[:]))
+		copy(dcBytes[:], dec[60:62])
+		dcRaw := int(int16(binary.LittleEndian.Uint16(dcBytes[:])))
+		dc := dcRaw
 		if dc < 0 {
 			dc = -dc
 		}
-		if dc == 0 || dc > 5 {
+		if dc == 0 {
 			dc = 2
 		}
 
-		var origKeyIV [48]byte
-		copy(origKeyIV[:], frame[8:56])
-
-		decBlock, err := aes.NewCipher(origKeyIV[:32])
-		if err != nil {
-			continue
-		}
-		recvCipher := cipher.NewCTR(decBlock, origKeyIV[32:48])
-
-		var revKeyIV [48]byte
-		copy(revKeyIV[:], origKeyIV[:])
-		slices.Reverse(revKeyIV[:])
-		encBlock, err := aes.NewCipher(revKeyIV[:32])
-		if err != nil {
-			continue
-		}
-		sendCipher := cipher.NewCTR(encBlock, revKeyIV[32:48])
-
 		return parsedObfuscated2{
 			userName:   s.Name,
+			secretKey:  sec.Key,
 			secretIdx:  idx,
 			connType:   connType,
 			dcBytes:    dcBytes,
+			dcRaw:      dcRaw,
 			dc:         dc,
 			recvCipher: recvCipher,
 			sendCipher: sendCipher,
@@ -677,11 +1019,11 @@ func parseObfuscated2Frame(frame []byte, secrets []mtgParsedSecret) parsedObfusc
 	return parsedObfuscated2{}
 }
 
-func (e *MtgEngine) handleRawConn(gen *mtgGeneration, conn net.Conn, ntw *mtgDeviceNetwork, rawSecrets []mtgParsedSecret) {
-	unreg := gen.registry.add(conn)
-	defer unreg()
+func (e *MtgEngine) handleRawConn(gen *mtgGeneration, conn net.Conn, ntw *mtgDeviceNetwork) {
+	entry, cleanup := gen.registry.registerClient(gen.ctx, conn)
+	defer cleanup()
 
-	if gen.ctx.Err() != nil {
+	if entry.ctx.Err() != nil {
 		return
 	}
 
@@ -692,30 +1034,42 @@ func (e *MtgEngine) handleRawConn(gen *mtgGeneration, conn net.Conn, ntw *mtgDev
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
-	if gen.ctx.Err() != nil {
+	if entry.ctx.Err() != nil {
 		return
 	}
 
-	parsed := parseObfuscated2Frame(frame[:], rawSecrets)
-	if parsed.matched {
-		e.serveClassicObfuscated2(gen, conn, ntw, parsed)
+	var secrets []mtgParsedSecret
+	if ptr := gen.rawSecrets.Load(); ptr != nil {
+		secrets = *ptr
+	}
+
+	parsed := parseObfuscated2Frame(frame[:], secrets)
+	if !parsed.matched {
 		return
 	}
+
+	// Re-check against latest secrets and bind user identity in registry
+	var latestSecrets []mtgParsedSecret
+	if ptr := gen.rawSecrets.Load(); ptr != nil {
+		latestSecrets = *ptr
+	}
+	if !gen.registry.authenticate(entry, parsed.userName, parsed.secretKey, latestSecrets) {
+		return
+	}
+
+	e.serveClassicObfuscated2(gen, entry, conn, ntw, parsed)
 }
 
-func (e *MtgEngine) serveClassicObfuscated2(gen *mtgGeneration, clientRaw net.Conn, ntw *mtgDeviceNetwork, parsed parsedObfuscated2) {
-	if gen.ctx.Err() != nil {
+func (e *MtgEngine) serveClassicObfuscated2(gen *mtgGeneration, entry *rawConnEntry, clientRaw net.Conn, ntw *mtgDeviceNetwork, parsed parsedObfuscated2) {
+	if entry.ctx.Err() != nil {
 		return
 	}
 
-	dcConn, dcRecvCipher, dcSendCipher, err := e.dialDC(gen.ctx, ntw, parsed.dc, parsed.connType, parsed.dcBytes)
+	dcConn, dcRecvCipher, dcSendCipher, err := e.dialDC(entry.ctx, ntw, parsed.dc, parsed.connType, parsed.dcBytes)
 	if err != nil {
 		return
 	}
-	unregDC := gen.registry.add(dcConn)
-	defer unregDC()
-
-	if gen.ctx.Err() != nil {
+	if !gen.registry.attachDC(entry, dcConn) {
 		return
 	}
 
@@ -791,11 +1145,15 @@ func (e *MtgEngine) serveClassicObfuscated2(gen *mtgGeneration, clientRaw net.Co
 
 	select {
 	case <-done:
-	case <-gen.ctx.Done():
+		_ = clientRaw.Close()
+		_ = dcConn.Close()
+		<-done
+	case <-entry.ctx.Done():
+		_ = clientRaw.Close()
+		_ = dcConn.Close()
+		<-done
+		<-done
 	}
-	_ = clientRaw.Close()
-	_ = dcConn.Close()
-	<-done
 }
 
 func (e *MtgEngine) dialDC(parentCtx context.Context, ntw *mtgDeviceNetwork, dc int, connType [4]byte, dcBytes [2]byte) (net.Conn, cipher.Stream, cipher.Stream, error) {
@@ -803,6 +1161,10 @@ func (e *MtgEngine) dialDC(parentCtx context.Context, ntw *mtgDeviceNetwork, dc 
 }
 
 func dialTelegramDCClassic(parentCtx context.Context, ntw *mtgDeviceNetwork, customDialer func(ctx context.Context, network, address string) (net.Conn, error), dc int, connType [4]byte, dcBytes [2]byte) (net.Conn, cipher.Stream, cipher.Stream, error) {
+	if err := parentCtx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
 	addrs := essentials.TelegramCoreAddresses[dc]
 	if len(addrs) == 0 {
 		addrs = essentials.TelegramCoreAddresses[2]
@@ -825,6 +1187,9 @@ func dialTelegramDCClassic(parentCtx context.Context, ntw *mtgDeviceNetwork, cus
 	var dcConn net.Conn
 	var dialErr error
 	for _, addr := range ordered {
+		if err := parentCtx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 		var c net.Conn
 		var err error
@@ -845,6 +1210,16 @@ func dialTelegramDCClassic(parentCtx context.Context, ntw *mtgDeviceNetwork, cus
 			dialErr = errors.New("no telegram DC addresses available")
 		}
 		return nil, nil, nil, dialErr
+	}
+
+	stopAbort := context.AfterFunc(parentCtx, func() {
+		_ = dcConn.Close()
+	})
+	defer stopAbort()
+
+	if err := parentCtx.Err(); err != nil {
+		_ = dcConn.Close()
+		return nil, nil, nil, err
 	}
 
 	var hs [64]byte
@@ -897,6 +1272,11 @@ func dialTelegramDCClassic(parentCtx context.Context, ntw *mtgDeviceNetwork, cus
 		return nil, nil, nil, err
 	}
 	_ = dcConn.SetWriteDeadline(time.Time{})
+
+	if err := parentCtx.Err(); err != nil {
+		_ = dcConn.Close()
+		return nil, nil, nil, err
+	}
 
 	return dcConn, recvCipher, sendCipher, nil
 }
