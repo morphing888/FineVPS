@@ -659,14 +659,15 @@ async function switchQRTab(tab) {
       emptyCard.hidden = true;
       hint.hidden = false;
       hint.textContent = curQRTGInfo.server_web_enabled
-        ? "Ссылка веб-моста для Telegram Web или приложения."
+        ? "Отсканируй в Telegram или камерой для быстрого подключения."
         : "Внимание: Web / CDN мост выключен в основных настройках Telegram.";
       hint.style.color = curQRTGInfo.server_web_enabled ? "" : "var(--warn)";
       linkBox.hidden = false;
       linkInp.value = link;
-      tgConnect.hidden = true;
+      tgConnect.hidden = false;
+      tgConnect.href = link;
       tgCopy.hidden = false;
-      tgCopy.onclick = () => copyText(link, "Web ссылка скопирована");
+      tgCopy.onclick = () => copyText(link, "Ссылка Web-прокси скопирована");
     } else {
       img.hidden = true;
       emptyCard.hidden = false;
@@ -726,6 +727,9 @@ async function switchQRTab(tab) {
 async function openQR(name, initialTab = "wg") {
   curQRUser = name;
   curQRTGInfo = null;
+  const tabs = document.querySelector(".qr-tabs");
+  if (tabs) tabs.hidden = false;
+  $("qr-file").style.display = "";
   const enc = encodeURIComponent(name);
   $("qr-title").textContent = name;
   $("qr-file").href = "api/users/" + enc + "/conf";
@@ -1561,6 +1565,7 @@ function renderTelegram(t) {
   const wbox = $("tg-web-connect-box");
   if (t.enabled && t.web_enabled && t.web_link) {
     wbox.hidden = false;
+    if ($("tg-web-app-link")) $("tg-web-app-link").href = t.web_link;
     $("tg-web-preview").value = t.web_link;
   } else {
     wbox.hidden = true;
@@ -1665,10 +1670,29 @@ $("tg-web-copy").onclick = () => {
 };
 
 function openTelegramQR(title, type) {
+  const tabs = document.querySelector(".qr-tabs");
+  if (tabs) tabs.hidden = true;
   $("qr-title").textContent = title;
+  $("qr-img").hidden = false;
   $("qr-img").src = "api/telegram/qr.svg?type=" + type;
-  $("qr-file").style.display = "none";
-  $("qr-dialog").querySelector(".hint").textContent = "Отсканируй QR-код камерой телефона или в Telegram для подключения к прокси.";
+  $("qr-empty-card").hidden = true;
+  $("qr-file").hidden = true;
+  const link = type === "web" ? (tgData && tgData.web_link) : (tgData && tgData.mtproto_link);
+  if (link) {
+    $("qr-link-box").hidden = false;
+    $("qr-link-input").value = link;
+    $("qr-tg-connect").hidden = false;
+    $("qr-tg-connect").href = link;
+    $("qr-tg-copy").hidden = false;
+    $("qr-tg-copy").onclick = () => copyText(link, "Ссылка скопирована");
+  } else {
+    $("qr-link-box").hidden = true;
+    $("qr-tg-connect").hidden = true;
+    $("qr-tg-copy").hidden = true;
+  }
+  $("qr-hint").hidden = false;
+  $("qr-hint").style.color = "";
+  $("qr-hint").textContent = "Отсканируй QR-код камерой телефона или в Telegram для подключения к прокси.";
   $("qr-dialog").showModal();
 }
 

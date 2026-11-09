@@ -36,6 +36,8 @@ type StatusResponse struct {
 	WebPort      int    `json:"web_port"`
 	WebRunning   bool   `json:"web_running"`
 	WebLink      string `json:"web_link"`
+	WebTmeLink   string `json:"web_tme_link"`
+	BridgeLink   string `json:"bridge_link"`
 	BridgeToken  string `json:"bridge_token"`
 	EntryIP      string `json:"entry_ip"`
 }
@@ -55,6 +57,8 @@ type UserTelegramInfo struct {
 	ServerWebEnabled     bool   `json:"server_web_enabled"`
 	MTProtoLink          string `json:"mtproto_link"`
 	WebLink              string `json:"web_link"`
+	WebTmeLink           string `json:"web_tme_link"`
+	BridgeLink           string `json:"bridge_link"`
 	BridgeToken          string `json:"bridge_token"`
 	WebDomain            string `json:"web_domain"`
 	WebDomainConfigured  bool   `json:"web_domain_configured"`
@@ -310,11 +314,17 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 	}
 
 	bridgeToken := ""
+	bridgeLink := ""
 	webLink := ""
-	webDomainConfigured := strings.TrimSpace(s.config.WebDomain) != ""
+	webTmeLink := ""
+	cleanWebDomain := strings.TrimSpace(strings.ToLower(s.config.WebDomain))
+	webDomainConfigured := cleanWebDomain != ""
 	if webDomainConfigured && u.Secret != "" {
-		bridgeToken = DeriveBridgeToken(s.config.WebDomain, u.Secret)
-		webLink = fmt.Sprintf("https://%s/?bridge=%s", strings.TrimSpace(s.config.WebDomain), bridgeToken)
+		cleanSecret := strings.TrimSpace(strings.ToLower(u.Secret))
+		bridgeToken = DeriveBridgeToken(cleanWebDomain, cleanSecret)
+		bridgeLink = fmt.Sprintf("https://%s/?bridge=%s", cleanWebDomain, bridgeToken)
+		webLink = fmt.Sprintf("tg://webproxy?server=%s&port=443&secret=%s", cleanWebDomain, cleanSecret)
+		webTmeLink = fmt.Sprintf("https://t.me/webproxy?server=%s&port=443&secret=%s", cleanWebDomain, cleanSecret)
 	}
 
 	return UserTelegramInfo{
@@ -326,6 +336,8 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 		ServerWebEnabled:     s.config.Enabled && s.config.WebEnabled,
 		MTProtoLink:          mtprotoLink,
 		WebLink:              webLink,
+		WebTmeLink:           webTmeLink,
+		BridgeLink:           bridgeLink,
 		BridgeToken:          bridgeToken,
 		WebDomain:            s.config.WebDomain,
 		WebDomainConfigured:  webDomainConfigured,
@@ -447,10 +459,16 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 	}
 
 	bridgeToken := ""
+	bridgeLink := ""
 	webLink := ""
-	if s.config.WebDomain != "" && s.config.Secret != "" {
-		bridgeToken = DeriveBridgeToken(s.config.WebDomain, s.config.Secret)
-		webLink = fmt.Sprintf("https://%s/?bridge=%s", strings.TrimSpace(s.config.WebDomain), bridgeToken)
+	webTmeLink := ""
+	cleanWebDomain := strings.TrimSpace(strings.ToLower(s.config.WebDomain))
+	if cleanWebDomain != "" && s.config.Secret != "" {
+		cleanSecret := strings.TrimSpace(strings.ToLower(s.config.Secret))
+		bridgeToken = DeriveBridgeToken(cleanWebDomain, cleanSecret)
+		bridgeLink = fmt.Sprintf("https://%s/?bridge=%s", cleanWebDomain, bridgeToken)
+		webLink = fmt.Sprintf("tg://webproxy?server=%s&port=443&secret=%s", cleanWebDomain, cleanSecret)
+		webTmeLink = fmt.Sprintf("https://t.me/webproxy?server=%s&port=443&secret=%s", cleanWebDomain, cleanSecret)
 	}
 
 	running := s.config.Enabled && s.mtg.directLis != nil
@@ -470,6 +488,8 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 		WebPort:     s.config.WebPort,
 		WebRunning:  webRunning,
 		WebLink:     webLink,
+		WebTmeLink:  webTmeLink,
+		BridgeLink:  bridgeLink,
 		BridgeToken: bridgeToken,
 		EntryIP:     s.entryIP,
 	}

@@ -510,7 +510,7 @@ func (a *App) userQR(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "2", "-o", "-")
+	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "4", "-l", "M", "-o", "-")
 	cmd.Stdin = bytes.NewReader(b)
 	out, err := cmd.Output()
 	if err != nil {
@@ -679,7 +679,7 @@ func (a *App) telegramQR(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Ссылка не сформирована")
 		return
 	}
-	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "2", "-o", "-")
+	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "4", "-l", "M", "-o", "-")
 	cmd.Stdin = strings.NewReader(text)
 	out, err := cmd.Output()
 	if err != nil {
@@ -816,7 +816,7 @@ func (a *App) userTelegramQR(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Ссылка не сформирована")
 		return
 	}
-	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "2", "-o", "-")
+	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "4", "-l", "M", "-o", "-")
 	cmd.Stdin = strings.NewReader(text)
 	out, err := cmd.Output()
 	if err != nil {

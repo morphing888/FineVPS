@@ -55,8 +55,14 @@ func TestServiceLinks(t *testing.T) {
 		t.Fatalf("mtproto link missing domain hex: %s", st.MTProtoLink)
 	}
 
-	if !strings.HasPrefix(st.WebLink, "https://tg.example.com/?bridge=") {
+	if st.WebLink != "tg://webproxy?server=tg.example.com&port=443&secret=0123456789abcdef0123456789abcdef" {
 		t.Fatalf("unexpected web link: %s", st.WebLink)
+	}
+	if st.WebTmeLink != "https://t.me/webproxy?server=tg.example.com&port=443&secret=0123456789abcdef0123456789abcdef" {
+		t.Fatalf("unexpected web tme link: %s", st.WebTmeLink)
+	}
+	if !strings.HasPrefix(st.BridgeLink, "https://tg.example.com/?bridge=") {
+		t.Fatalf("unexpected bridge link: %s", st.BridgeLink)
 	}
 	if len(st.BridgeToken) != 43 {
 		t.Fatalf("expected 43 char bridge token, got %q", st.BridgeToken)
@@ -95,8 +101,11 @@ func TestUserTelegram(t *testing.T) {
 	if !strings.HasPrefix(u1.MTProtoLink, "tg://proxy?server=87.228.113.192&port=8443&secret=ee"+u1.Secret) {
 		t.Fatalf("unexpected user mtproto link: %s", u1.MTProtoLink)
 	}
-	if !strings.HasPrefix(u1.WebLink, "https://tg.example.com/?bridge=") {
+	if u1.WebLink != "tg://webproxy?server=tg.example.com&port=443&secret="+u1.Secret {
 		t.Fatalf("unexpected user web link: %s", u1.WebLink)
+	}
+	if !strings.HasPrefix(u1.BridgeLink, "https://tg.example.com/?bridge=") {
+		t.Fatalf("unexpected user bridge link: %s", u1.BridgeLink)
 	}
 
 	// 2. SetUser with custom flags
