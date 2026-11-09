@@ -206,7 +206,7 @@
         <div class="add-tg-row">
           <span class="dim" style="font-size: 13px;">Telegram:</span>
           <button type="button" id="add-tg-btn" class="tag-btn on" title="MTProto Proxy">TG</button>
-          <button type="button" id="add-web-btn" class="tag-btn on" title="Web / CDN мост">WEB</button>
+          <button type="button" id="add-web-btn" class="tag-btn on" title="Telegram Web Proxy">WEB</button>
         </div>
         <p id="add-error" class="error" role="alert" hidden></p>
       </form>
@@ -304,7 +304,7 @@
     <!-- Telegram Proxy -->
     <section id="page-telegram" class="page" hidden>
       <h1>Telegram</h1>
-      <p class="lead">Встроенный быстрый прокси на базе библиотеки mtg с Fake-TLS и поддержкой Web/CDN моста для официальных клиентов Telegram.</p>
+      <p class="lead">Встроенный быстрый прокси на базе библиотеки mtg с Fake-TLS и поддержкой Web-моста для официальных клиентов Telegram.</p>
 
       <div class="grid">
         <!-- MTProto Proxy Card -->
@@ -364,12 +364,12 @@
           </form>
         </section>
 
-        <!-- Web Proxy / CDN Card -->
+        <!-- Web Proxy Card -->
         <section class="card col-6 tg-card">
           <div class="card-head">
             <div>
-              <h2>Telegram Web / CDN</h2>
-              <p class="hint">Веб-мост через Cloudflare или Selectel CDN</p>
+              <h2>Telegram Web Proxy</h2>
+              <p class="hint">Веб-мост по HTTPS для клиентов Telegram</p>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex: none;">
               <span id="tg-web-status-tag" class="tag off">Отключен</span>
@@ -392,7 +392,7 @@
           <form id="tg-web-form">
             <div class="grid" style="gap: 12px; margin-bottom: 12px;">
               <div class="col-8">
-                <label for="tg-web-domain">Публичный домен CDN</label>
+                <label for="tg-web-domain">Публичный домен</label>
                 <input id="tg-web-domain" placeholder="tg.example.com" autocapitalize="none" autocomplete="off" spellcheck="false">
               </div>
               <div class="col-4">
@@ -402,7 +402,7 @@
             </div>
 
             <p class="hint" style="margin-top: 4px;">
-              Направь домен на Cloudflare (с оранжевым облаком) или Selectel CDN и настрой Origin Rule или порт на IP сервера. Запросы пойдут по зашифрованному WebSocket.
+              Укажи публичный домен, направленный на этот порт сервера. Соединение работает поверх HTTPS.
             </p>
 
             <div class="tg-foot">
@@ -465,7 +465,7 @@
   </div>
   <img id="qr-img" alt="QR-код настроек" onerror="this.hidden=true">
   <div id="qr-empty-card" class="card" style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px; margin-bottom: 12px; text-align: left;" hidden>
-    <div style="font-weight: 600; font-size: 13.5px; color: var(--warn); margin-bottom: 4px;" id="qr-empty-title">Домен CDN не настроен</div>
+    <div style="font-weight: 600; font-size: 13.5px; color: var(--warn); margin-bottom: 4px;" id="qr-empty-title">Домен не настроен</div>
     <p id="qr-empty-desc" style="font-size: 13px; color: var(--muted); margin: 0 0 10px;"></p>
     <button type="button" id="qr-empty-action" class="small">Настроить домен в Telegram</button>
   </div>

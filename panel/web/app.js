@@ -454,7 +454,7 @@ async function toggleUserTG(u, proto, btnEl) {
   // Мгновенный визуальный отклик
   if (btnEl) {
     btnEl.className = "tag-btn " + (targetVal ? "on" : "off");
-    btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web / CDN мост: ") + (targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+    btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web-мост: ") + (targetVal ? "включен" : "отключен") + " (нажми для переключения)";
     btnEl.blur();
   }
 
@@ -472,7 +472,7 @@ async function toggleUserTG(u, proto, btnEl) {
     // При ошибке возвращаем прежний цвет
     if (btnEl) {
       btnEl.className = "tag-btn " + (!targetVal ? "on" : "off");
-      btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web / CDN мост: ") + (!targetVal ? "включен" : "отключен") + " (нажми для переключения)";
+      btnEl.title = (proto === "tg" ? "MTProto Proxy: " : "Web-мост: ") + (!targetVal ? "включен" : "отключен") + " (нажми для переключения)";
     }
     toast("Ошибка: " + e.message);
   }
@@ -499,7 +499,7 @@ function renderUsers(list, force = false) {
 
     const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off"), "WEB");
     btnWeb.type = "button";
-    btnWeb.title = "Web / CDN мост: " + (u.tgWeb ? "включен" : "отключен") + " (нажми для переключения)";
+    btnWeb.title = "Web-мост: " + (u.tgWeb ? "включен" : "отключен") + " (нажми для переключения)";
     btnWeb.onclick = () => toggleUserTG(u, "web", btnWeb);
 
     tgCol.append(btnTG, btnWeb);
@@ -660,7 +660,7 @@ async function switchQRTab(tab) {
       hint.hidden = false;
       hint.textContent = curQRTGInfo.server_web_enabled
         ? "Отсканируй в Telegram или камерой для быстрого подключения."
-        : "Внимание: Web / CDN мост выключен в основных настройках Telegram.";
+        : "Внимание: Web-мост выключен в основных настройках Telegram.";
       hint.style.color = curQRTGInfo.server_web_enabled ? "" : "var(--warn)";
       linkBox.hidden = false;
       linkInp.value = link;
@@ -673,7 +673,7 @@ async function switchQRTab(tab) {
       emptyCard.hidden = false;
       if (!curQRTGInfo.web) {
         emptyTitle.textContent = "Web-мост отключен";
-        emptyDesc.textContent = "Доступ к Web / CDN мосту выключен для этого пользователя.";
+        emptyDesc.textContent = "Доступ к Web-мосту выключен для этого пользователя.";
         emptyAction.hidden = false;
         emptyAction.className = "small primary";
         emptyAction.textContent = "Включить";
@@ -696,8 +696,8 @@ async function switchQRTab(tab) {
           }
         };
       } else if (!curQRTGInfo.web_domain_configured) {
-        emptyTitle.textContent = "Домен CDN не настроен";
-        emptyDesc.textContent = "Чтобы веб-мост заработал, укажи публичный домен CDN в разделе Telegram (например, tg.example.com).";
+        emptyTitle.textContent = "Домен не настроен";
+        emptyDesc.textContent = "Чтобы веб-мост заработал, укажи публичный домен в разделе Telegram (например, tg.example.com).";
         emptyAction.hidden = false;
         emptyAction.className = "small";
         emptyAction.textContent = "Настроить домен в Telegram";
@@ -707,7 +707,7 @@ async function switchQRTab(tab) {
         };
       } else {
         emptyTitle.textContent = "Веб-мост не активен";
-        emptyDesc.textContent = "Включи Web / CDN мост в разделе Telegram.";
+        emptyDesc.textContent = "Включи Web-мост в разделе Telegram.";
         emptyAction.hidden = false;
         emptyAction.className = "small";
         emptyAction.textContent = "Открыть настройки Telegram";
@@ -1617,7 +1617,7 @@ $("tg-web-toggle-btn").onclick = async () => {
   const newWeb = !tgData.web_enabled;
   try {
     await saveTelegram({ web_enabled: newWeb });
-    toast(newWeb ? "Web / CDN мост включен" : "Web / CDN мост отключен");
+    toast(newWeb ? "Web-мост включен" : "Web-мост отключен");
   } catch (err) {
     toast("Ошибка: " + err.message);
   }
@@ -1649,7 +1649,7 @@ $("tg-web-form").onsubmit = async (ev) => {
   ev.preventDefault();
   try {
     await saveTelegram({});
-    toast("Настройки Web / CDN сохранены");
+    toast("Настройки Web-моста сохранены");
   } catch (err) {
     toast("Ошибка сохранения: " + err.message);
   }
@@ -1697,4 +1697,4 @@ function openTelegramQR(title, type) {
 }
 
 $("tg-qr-link").onclick = () => openTelegramQR("MTProto Proxy", "mtproto");
-$("tg-web-qr").onclick = () => openTelegramQR("Telegram Web / CDN Proxy", "web");
+$("tg-web-qr").onclick = () => openTelegramQR("Telegram Web Proxy", "web");
