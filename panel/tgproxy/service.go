@@ -75,7 +75,7 @@ func NewService(stateDir, entryIP string) *Service {
 		stateDir: stateDir,
 		entryIP:  entryIP,
 		mtg:      NewMtgEngine(),
-		tproxy:   NewTproxyEngine(),
+		tproxy:   NewTproxyEngine(stateDir),
 	}
 	s.load()
 	return s

@@ -2,10 +2,13 @@ package tgproxy
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +34,7 @@ type UserProfile struct {
 }
 
 type TproxyEngine struct {
+	stateDir string
 	mu       sync.Mutex
 	server   *http.Server
 	app      *appserver.Server
@@ -40,8 +44,8 @@ type TproxyEngine struct {
 	port     int
 }
 
-func NewTproxyEngine() *TproxyEngine {
-	return &TproxyEngine{}
+func NewTproxyEngine(stateDir string) *TproxyEngine {
+	return &TproxyEngine{stateDir: stateDir}
 }
 
 func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string, profiles []UserProfile) error {
@@ -62,6 +66,26 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
 	cfg.AdminListen = "127.0.0.1:0"
 
+	dir := t.stateDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	tokenDir := filepath.Join(dir, "telegram")
+	_ = os.MkdirAll(tokenDir, 0o700)
+	tokenPath := filepath.Join(tokenDir, "token.key")
+	if fi, err := os.Stat(tokenPath); err != nil || fi.Size() != 32 {
+		keyBytes := make([]byte, 32)
+		if _, err := rand.Read(keyBytes); err != nil {
+			return fmt.Errorf("generate token key: %w", err)
+		}
+		if err := os.WriteFile(tokenPath, keyBytes, 0o600); err != nil {
+			return fmt.Errorf("write token key: %w", err)
+		}
+	} else if fi.Mode().Perm()&0077 != 0 {
+		_ = os.Chmod(tokenPath, 0o600)
+	}
+	cfg.TokenKeyFile = tokenPath
+
 	var pList []config.Profile
 	seen := make(map[string]bool)
 	for _, prof := range profiles {
@@ -78,7 +102,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 		p := config.Profile{
 			Name:        prof.Name,
 			Backend:     rawBackendAddr,
-			CarrierMode: config.CarrierWebSocket,
+			CarrierMode: config.CarrierHTTPS,
 			Capability:  capBytes,
 		}
 		p.Limits = p.Limits.WithDefaults(cfg.Limits)
@@ -91,7 +115,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 		p := config.Profile{
 			Name:        "default",
 			Backend:     rawBackendAddr,
-			CarrierMode: config.CarrierWebSocket,
+			CarrierMode: config.CarrierHTTPS,
 			Capability:  capBytes,
 		}
 		p.Limits = p.Limits.WithDefaults(cfg.Limits)

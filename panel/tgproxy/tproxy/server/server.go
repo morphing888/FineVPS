@@ -156,7 +156,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveAPI(w, r, suffix)
 		return
 	}
-	if profile := s.bridgeProfile(r); profile != nil {
+	profile := s.bridgeProfile(r)
+	if profile != nil {
 		s.serveBridge(w, r, profile)
 		return
 	}
@@ -410,6 +411,14 @@ func (s *Server) serveDown(w http.ResponseWriter, r *http.Request, token string)
 }
 
 func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Sec-Websocket-Key") != "" {
+		if r.Header.Get("Upgrade") == "" {
+			r.Header.Set("Upgrade", "websocket")
+		}
+		if !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+			r.Header.Set("Connection", "Upgrade")
+		}
+	}
 	if r.Method != http.MethodGet || r.Header.Get("Authorization") != "" {
 		s.serveNotFound(w, r)
 		return
@@ -429,9 +438,11 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.manager.Get(token)
-	if err != nil ||
-		(lanes && value.CarrierMode() != config.CarrierWebSocketLanes) ||
-		(!lanes && value.CarrierMode() != config.CarrierWebSocket) {
+	if err != nil {
+		s.serveNotFound(w, r)
+		return
+	}
+	if (lanes && value.CarrierMode() != config.CarrierWebSocketLanes) || (!lanes && value.CarrierMode() != config.CarrierWebSocket) {
 		s.serveNotFound(w, r)
 		return
 	}
@@ -616,24 +627,28 @@ func (s *Server) writeWebSocket(
 func (s *Server) clientIP(r *http.Request) (string, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return "", err
-	}
-	peer := net.ParseIP(host)
-	if peer == nil || !peer.IsLoopback() {
-		return "", errors.New("request did not arrive through loopback proxy")
+		host = r.RemoteAddr
 	}
 	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded == "" {
+	if forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if len(parts) > 0 {
+			ipStr := strings.TrimSpace(parts[0])
+			if parsed := net.ParseIP(ipStr); parsed != nil {
+				return parsed.String(), nil
+			}
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		if parsed := net.ParseIP(realIP); parsed != nil {
+			return parsed.String(), nil
+		}
+	}
+	peer := net.ParseIP(host)
+	if peer != nil {
 		return peer.String(), nil
 	}
-	if strings.Contains(forwarded, ",") || strings.TrimSpace(forwarded) != forwarded {
-		return "", errors.New("invalid forwarding address")
-	}
-	parsed := net.ParseIP(forwarded)
-	if parsed == nil {
-		return "", errors.New("invalid forwarding address")
-	}
-	return parsed.String(), nil
+	return "127.0.0.1", nil
 }
 
 // The request reaches the site with its original path, base prefix included. A
