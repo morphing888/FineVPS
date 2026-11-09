@@ -228,11 +228,19 @@ func (s *Service) applyLocked(cfg Config) error {
 
 	rawAddr := "127.0.0.1:2398"
 
-	var mtgSecrets []string
+	var directSecrets []UserSecret
+	var rawSecrets []UserSecret
 	var tproxyProfiles []UserProfile
 
 	if cfg.Secret != "" {
-		mtgSecrets = append(mtgSecrets, cfg.Secret)
+		directSecrets = append(directSecrets, UserSecret{
+			Name:   "default",
+			Secret: cfg.Secret,
+		})
+		rawSecrets = append(rawSecrets, UserSecret{
+			Name:   "default",
+			Secret: cfg.Secret,
+		})
 		tproxyProfiles = append(tproxyProfiles, UserProfile{
 			Name:   "default",
 			Secret: cfg.Secret,
@@ -252,9 +260,16 @@ func (s *Service) applyLocked(cfg Config) error {
 				continue
 			}
 			if uCfg.MTProto {
-				mtgSecrets = append(mtgSecrets, uCfg.Secret)
+				directSecrets = append(directSecrets, UserSecret{
+					Name:   userName,
+					Secret: uCfg.Secret,
+				})
 			}
 			if uCfg.Web {
+				rawSecrets = append(rawSecrets, UserSecret{
+					Name:   userName,
+					Secret: uCfg.Secret,
+				})
 				tproxyProfiles = append(tproxyProfiles, UserProfile{
 					Name:   userName,
 					Secret: uCfg.Secret,
@@ -264,7 +279,8 @@ func (s *Service) applyLocked(cfg Config) error {
 	}
 
 	spec := mtgActiveSpec{
-		Secrets:        mtgSecrets,
+		DirectSecrets:  directSecrets,
+		RawSecrets:     rawSecrets,
 		TlsDomain:      cfg.TLSDomain,
 		UpstreamDevice: upstreamDev,
 		DirectPort:     cfg.Port,
@@ -493,4 +509,11 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 		BridgeToken: bridgeToken,
 		EntryIP:     s.entryIP,
 	}
+}
+
+func (s *Service) GetUserStats() map[string]UserStats {
+	if s == nil || s.mtg == nil {
+		return nil
+	}
+	return s.mtg.GetUserStats()
 }

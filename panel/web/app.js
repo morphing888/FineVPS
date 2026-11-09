@@ -492,21 +492,27 @@ function renderUsers(list, force = false) {
     a.append(el("span", "user-name", u.name), el("span", "user-ip", u.ip));
 
     const tgCol = el("div", "user-tg-col");
-    const btnTG = el("button", "tag-btn " + (u.tgMtproto ? "on" : "off"), "TG");
+    const tgActive = (u.tgDirectConns || 0) > 0;
+    const btnTG = el("button", "tag-btn " + (u.tgMtproto ? "on" : "off") + (tgActive ? " active" : ""), "TG" + (tgActive ? ` (${u.tgDirectConns})` : ""));
     btnTG.type = "button";
-    btnTG.title = "MTProto Proxy: " + (u.tgMtproto ? "включен" : "отключен") + " (нажми для переключения)";
+    btnTG.title = "MTProto Proxy: " + (u.tgMtproto ? "включен" : "отключен") + (tgActive ? ` • активно: ${u.tgDirectConns}` : "") + " (нажми для переключения)";
     btnTG.onclick = () => toggleUserTG(u, "tg", btnTG);
 
-    const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off"), "WEB");
+    const webActive = (u.tgWebConns || 0) > 0;
+    const btnWeb = el("button", "tag-btn " + (u.tgWeb ? "on" : "off") + (webActive ? " active" : ""), "WEB" + (webActive ? ` (${u.tgWebConns})` : ""));
     btnWeb.type = "button";
-    btnWeb.title = "Web-мост: " + (u.tgWeb ? "включен" : "отключен") + " (нажми для переключения)";
+    btnWeb.title = "Web-мост: " + (u.tgWeb ? "включен" : "отключен") + (webActive ? ` • активно: ${u.tgWebConns}` : "") + " (нажми для переключения)";
     btnWeb.onclick = () => toggleUserTG(u, "web", btnWeb);
 
     tgCol.append(btnTG, btnWeb);
 
     const [cls, text] = stateOf(u);
     const st = el("div");
-    st.append(el("span", "tag " + cls, text));
+    const tagEl = el("span", "tag " + cls, text);
+    if (u.tgConns > 0) {
+      tagEl.title = `Telegram: ${u.tgConns} активных соед.`;
+    }
+    st.append(tagEl);
     const sp = el("div");
     sp.append(el("span", "cap", "Скорость"), el("span", "", u.online ? bits(u.downBps + u.upBps) : "нет"));
     const tot = el("div");

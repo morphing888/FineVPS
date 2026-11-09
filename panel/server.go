@@ -143,6 +143,7 @@ func NewApp(cfg Config, col *Collector) (*App, error) {
 	if err := tgSvc.Start(); err != nil {
 		log.Printf("telegram proxy start error: %v", err)
 	}
+	col.SetTG(tgSvc)
 	return &App{
 		cfg:      cfg,
 		col:      col,

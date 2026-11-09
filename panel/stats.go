@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"awgcascade/panel/tgproxy"
 )
 
 // Показатели одного отрезка времени, в байтах.
@@ -138,7 +140,9 @@ type Collector struct {
 	prevCl  *Counter
 	prevUp  *Counter
 	prevS2  *Counter
-	prevPub map[string]Counter
+	prevPub   map[string]Counter
+	tg        *tgproxy.Service
+	prevProxy map[string]tgproxy.UserStats
 }
 
 func NewCollector(cfg Config) *Collector {
@@ -148,8 +152,15 @@ func NewCollector(cfg Config) *Collector {
 		http:    &http.Client{Timeout: 2 * time.Second},
 		saved:   saved{Days: map[string][nMetrics]uint64{}, UserDays: map[string]map[string][2]uint64{}},
 		users:   map[string]UserLive{},
-		prevPub: map[string]Counter{},
+		prevPub:   map[string]Counter{},
+		prevProxy: map[string]tgproxy.UserStats{},
 	}
+}
+
+func (c *Collector) SetTG(tg *tgproxy.Service) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tg = tg
 }
 
 func (c *Collector) Load() {
@@ -273,12 +284,20 @@ func (c *Collector) sample(t time.Time) {
 	s2 := c.readAgent()
 	transfer, hand := c.peerCounters()
 	names := userPubs(c.cfg.State)
-	c.record(t, s1, cl, up, s2, host, transfer, hand, names)
+	var pStats map[string]tgproxy.UserStats
+	c.mu.RLock()
+	tg := c.tg
+	c.mu.RUnlock()
+	if tg != nil {
+		pStats = tg.GetUserStats()
+	}
+	c.record(t, s1, cl, up, s2, host, transfer, hand, names, pStats)
 }
 
 // record: чистая часть замера, отдельно от чтения системы, чтобы её можно было тестировать.
 func (c *Collector) record(t time.Time, s1, cl, up Counter, s2 *Host, host Host,
-	transfer map[string]Counter, hand map[string]int64, names map[string]string) {
+	transfer map[string]Counter, hand map[string]int64, names map[string]string,
+	pStats map[string]tgproxy.UserStats) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	sec := 0.0
@@ -312,18 +331,56 @@ func (c *Collector) record(t time.Time, s1, cl, up Counter, s2 *Host, host Host,
 
 	live := map[string]UserLive{}
 	day := dayKey(t)
+
+	allUsers := make(map[string]string)
 	for pub, name := range names {
-		cur := transfer[pub]
-		var rx, tx uint64
-		if p, ok := c.prevPub[pub]; ok {
-			rx, tx = delta(cur.Rx, p.Rx), delta(cur.Tx, p.Tx)
+	allUsers[name] = pub
+	}
+	for name := range pStats {
+	if name == "default" || name == "dummy" {
+		continue
+	}
+	if _, ok := allUsers[name]; !ok {
+		allUsers[name] = ""
+	}
+	}
+
+	for name, pub := range allUsers {
+		var wgRx, wgTx uint64
+		var wgHand int64
+		if pub != "" {
+			cur := transfer[pub]
+			if p, ok := c.prevPub[pub]; ok {
+				wgRx, wgTx = delta(cur.Rx, p.Rx), delta(cur.Tx, p.Tx)
+			}
+			c.prevPub[pub] = cur
+			wgHand = hand[pub]
 		}
-		c.prevPub[pub] = cur
-		u := UserLive{LastHandshake: hand[pub]}
+
+		var pxRx, pxTx uint64
+		var pxLastActive int64
+		if ps, ok := pStats[name]; ok {
+			if prevPs, hasPrev := c.prevProxy[name]; hasPrev {
+				pxRx = delta(ps.RxBytes, prevPs.RxBytes)
+				pxTx = delta(ps.TxBytes, prevPs.TxBytes)
+			}
+			c.prevProxy[name] = ps
+			pxLastActive = ps.LastActive
+		}
+
+		rx := wgRx + pxRx
+		tx := wgTx + pxTx
+		lastHand := wgHand
+		if pxLastActive > lastHand {
+			lastHand = pxLastActive
+		}
+
+		u := UserLive{LastHandshake: lastHand}
 		if sec > 0 {
 			u.RxBps, u.TxBps = float64(rx)*8/sec, float64(tx)*8/sec
 		}
 		live[name] = u
+
 		if rx+tx > 0 {
 			d := c.UserDays[name]
 			if d == nil {
@@ -502,6 +559,9 @@ type UserInfo struct {
 	MonthUp       uint64  `json:"monthUp"`
 	TGMTProto     bool    `json:"tgMtproto"`
 	TGWeb         bool    `json:"tgWeb"`
+	TGDirectConns int32   `json:"tgDirectConns"`
+	TGWebConns    int32   `json:"tgWebConns"`
+	TGConns       int32   `json:"tgConns"`
 }
 
 func (c *Collector) Users(t time.Time) []UserInfo {
@@ -509,11 +569,22 @@ func (c *Collector) Users(t time.Time) []UserInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	today, month := dayKey(t), monthKey(t)
+	var pStats map[string]tgproxy.UserStats
+	if c.tg != nil {
+		pStats = c.tg.GetUserStats()
+	}
 	for i := range list {
 		u := &list[i]
 		l := c.users[u.Name]
 		u.LastHandshake = l.LastHandshake
-		u.Online = u.Enabled && l.LastHandshake > 0 && t.Unix()-l.LastHandshake < onlineAfter
+		if pStats != nil {
+			if ps, ok := pStats[u.Name]; ok {
+				u.TGDirectConns = ps.DirectConns
+				u.TGWebConns = ps.WebConns
+				u.TGConns = ps.ActiveConns
+			}
+		}
+		u.Online = u.Enabled && ((l.LastHandshake > 0 && t.Unix()-l.LastHandshake < onlineAfter) || u.TGConns > 0)
 		// Сервер принимает от устройства то, что оно отдаёт, и наоборот.
 		u.UpBps, u.DownBps = l.RxBps, l.TxBps
 		for k, v := range c.UserDays[u.Name] {

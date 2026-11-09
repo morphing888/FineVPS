@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"awgcascade/panel/tgproxy"
 )
 
 func TestParseNetDev(t *testing.T) {
@@ -44,10 +46,10 @@ func TestRecordSplitsTraffic(t *testing.T) {
 	t0 := time.Date(2026, 11, 6, 12, 0, 0, 0, msk)
 	host := Host{}
 	names := map[string]string{"pub": "andrey"}
-	c.record(t0, Counter{0, 0}, Counter{0, 0}, Counter{0, 0}, &Host{}, host, map[string]Counter{"pub": {}}, nil, names)
+	c.record(t0, Counter{0, 0}, Counter{0, 0}, Counter{0, 0}, &Host{}, host, map[string]Counter{"pub": {}}, nil, names, nil)
 	s2 := &Host{Wan: Counter{500, 700}}
 	c.record(t0.Add(10*time.Second), Counter{1000, 2000}, Counter{100, 900}, Counter{300, 400}, s2, host,
-		map[string]Counter{"pub": {100, 900}}, map[string]int64{"pub": 5}, names)
+		map[string]Counter{"pub": {100, 900}}, map[string]int64{"pub": 5}, names, nil)
 	s := c.Summary(t0.Add(10 * time.Second))
 	if s.Today.S1Rx != 1000 || s.Today.S1Tx != 2000 {
 		t.Fatalf("сервер 1: %+v", s.Today)
@@ -66,11 +68,35 @@ func TestRecordSplitsTraffic(t *testing.T) {
 	}
 }
 
+func TestRecordProxyTraffic(t *testing.T) {
+	c := newCol(t)
+	t0 := time.Date(2026, 11, 6, 12, 0, 0, 0, msk)
+	host := Host{}
+	names := map[string]string{"pub1": "user1"}
+	pStats0 := map[string]tgproxy.UserStats{
+		"user1": {Name: "user1", RxBytes: 1000, TxBytes: 2000, LastActive: t0.Unix(), ActiveConns: 1},
+	}
+	c.record(t0, Counter{}, Counter{}, Counter{}, nil, host, nil, nil, names, pStats0)
+
+	// After 10s: user uploaded 500 bytes and downloaded 1500 bytes via proxy
+	pStats1 := map[string]tgproxy.UserStats{
+		"user1": {Name: "user1", RxBytes: 1500, TxBytes: 3500, LastActive: t0.Add(10 * time.Second).Unix(), ActiveConns: 1},
+	}
+	c.record(t0.Add(10*time.Second), Counter{500, 1500}, Counter{}, Counter{}, nil, host, nil, nil, names, pStats1)
+
+	if c.UserDays["user1"]["2026-11-06"] != [2]uint64{500, 1500} {
+		t.Fatalf("user proxy traffic: %v", c.UserDays["user1"])
+	}
+	if u := c.users["user1"]; u.RxBps != 400 || u.TxBps != 1200 {
+		t.Fatalf("user live speeds: %+v", u)
+	}
+}
+
 func TestServer2OfflineGivesGapNotZero(t *testing.T) {
 	c := newCol(t)
 	t0 := time.Now()
-	c.record(t0, Counter{}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil)
-	c.record(t0.Add(5*time.Second), Counter{1, 1}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil)
+	c.record(t0, Counter{}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil, nil)
+	c.record(t0.Add(5*time.Second), Counter{1, 1}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil, nil)
 	p, _, _ := c.Query("10m", t0.Add(5*time.Second))
 	if len(p) != 1 || p[0].S2Rx != nil {
 		t.Fatalf("%+v", p)
@@ -120,8 +146,8 @@ func TestRollupAndRetention(t *testing.T) {
 func TestSaveLoadAndBadFile(t *testing.T) {
 	c := newCol(t)
 	t0 := time.Now()
-	c.record(t0, Counter{}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil)
-	c.record(t0.Add(5*time.Second), Counter{10, 20}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil)
+	c.record(t0, Counter{}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil, nil)
+	c.record(t0.Add(5*time.Second), Counter{10, 20}, Counter{}, Counter{}, nil, Host{}, nil, nil, nil, nil)
 	c.Save()
 	d := NewCollector(c.cfg)
 	d.Load()
