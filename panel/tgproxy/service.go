@@ -40,6 +40,25 @@ type StatusResponse struct {
 	EntryIP      string `json:"entry_ip"`
 }
 
+type UserTelegramConfig struct {
+	Secret  string `json:"secret"`
+	MTProto bool   `json:"mtproto"`
+	Web     bool   `json:"web"`
+}
+
+type UserTelegramInfo struct {
+	Name                 string `json:"name"`
+	Secret               string `json:"secret"`
+	MTProto              bool   `json:"mtproto"`
+	Web                  bool   `json:"web"`
+	ServerMTProtoEnabled bool   `json:"server_mtproto_enabled"`
+	ServerWebEnabled     bool   `json:"server_web_enabled"`
+	MTProtoLink          string `json:"mtproto_link"`
+	WebLink              string `json:"web_link"`
+	BridgeToken          string `json:"bridge_token"`
+	EntryIP              string `json:"entry_ip"`
+}
+
 type Service struct {
 	mu       sync.Mutex
 	stateDir string
@@ -62,6 +81,10 @@ func NewService(stateDir, entryIP string) *Service {
 
 func (s *Service) cfgPath() string {
 	return filepath.Join(s.stateDir, "telegram", "settings.json")
+}
+
+func (s *Service) userCfgPath(name string) string {
+	return filepath.Join(s.stateDir, "users", name+".tg.json")
 }
 
 func (s *Service) load() {
@@ -104,6 +127,40 @@ func (s *Service) saveLocked() error {
 	return os.WriteFile(s.cfgPath(), b, 0o600)
 }
 
+func (s *Service) getUserLocked(name string) (UserTelegramConfig, error) {
+	p := s.userCfgPath(name)
+	data, err := os.ReadFile(p)
+	if err == nil {
+		var u UserTelegramConfig
+		if json.Unmarshal(data, &u) == nil && u.Secret != "" {
+			return u, nil
+		}
+	}
+	sec, err := randomHexSecret()
+	if err != nil {
+		return UserTelegramConfig{}, err
+	}
+	u := UserTelegramConfig{
+		Secret:  sec,
+		MTProto: true,
+		Web:     true,
+	}
+	_ = s.saveUserLocked(name, u)
+	return u, nil
+}
+
+func (s *Service) saveUserLocked(name string, u UserTelegramConfig) error {
+	dir := filepath.Dir(s.userCfgPath(name))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(u, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.userCfgPath(name), b, 0o600)
+}
+
 func (s *Service) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,6 +199,15 @@ func (s *Service) Apply(newCfg Config) error {
 	return s.saveLocked()
 }
 
+func (s *Service) ReloadUsers() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config.Enabled {
+		return s.applyLocked(s.config)
+	}
+	return nil
+}
+
 func (s *Service) applyLocked(cfg Config) error {
 	if !cfg.Enabled {
 		s.tproxy.Stop()
@@ -155,8 +221,44 @@ func (s *Service) applyLocked(cfg Config) error {
 	}
 
 	rawAddr := "127.0.0.1:2398"
+
+	var mtgSecrets []string
+	var tproxyProfiles []UserProfile
+
+	if cfg.Secret != "" {
+		mtgSecrets = append(mtgSecrets, cfg.Secret)
+		tproxyProfiles = append(tproxyProfiles, UserProfile{
+			Name:   "default",
+			Secret: cfg.Secret,
+		})
+	}
+
+	usersDir := filepath.Join(s.stateDir, "users")
+	if entries, err := os.ReadDir(usersDir); err == nil {
+		for _, e := range entries {
+			// Only enabled users (*.peer)
+			if !strings.HasSuffix(e.Name(), ".peer") {
+				continue
+			}
+			userName := strings.TrimSuffix(e.Name(), ".peer")
+			uCfg, err := s.getUserLocked(userName)
+			if err != nil || uCfg.Secret == "" {
+				continue
+			}
+			if uCfg.MTProto {
+				mtgSecrets = append(mtgSecrets, uCfg.Secret)
+			}
+			if uCfg.Web {
+				tproxyProfiles = append(tproxyProfiles, UserProfile{
+					Name:   userName,
+					Secret: uCfg.Secret,
+				})
+			}
+		}
+	}
+
 	spec := mtgActiveSpec{
-		Secret:         cfg.Secret,
+		Secrets:        mtgSecrets,
 		TlsDomain:      cfg.TLSDomain,
 		UpstreamDevice: upstreamDev,
 		DirectPort:     cfg.Port,
@@ -170,7 +272,7 @@ func (s *Service) applyLocked(cfg Config) error {
 	}
 
 	if cfg.WebEnabled {
-		if err := s.tproxy.Start(cfg.WebDomain, cfg.WebPort, rawAddr, cfg.Secret); err != nil {
+		if err := s.tproxy.Start(cfg.WebDomain, cfg.WebPort, rawAddr, tproxyProfiles); err != nil {
 			return fmt.Errorf("start tproxy engine: %w", err)
 		}
 	} else {
@@ -178,6 +280,132 @@ func (s *Service) applyLocked(cfg Config) error {
 	}
 
 	return nil
+}
+
+func (s *Service) cleanHost(currentHost string) string {
+	host := currentHost
+	if host == "" || host == "127.0.0.1" || host == "localhost" {
+		host = s.entryIP
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host
+}
+
+func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig) UserTelegramInfo {
+	h := s.cleanHost(host)
+	mtprotoLink := ""
+	if u.Secret != "" {
+		cleanSecret := strings.TrimSpace(strings.ToLower(u.Secret))
+		cleanDomain := strings.TrimSpace(strings.ToLower(s.config.TLSDomain))
+		if cleanDomain == "" {
+			cleanDomain = "ya.ru"
+		}
+		domainHex := hex.EncodeToString([]byte(cleanDomain))
+		fullSecret := "ee" + cleanSecret + domainHex
+		mtprotoLink = fmt.Sprintf("tg://proxy?server=%s&port=%d&secret=%s", h, s.config.Port, fullSecret)
+	}
+
+	bridgeToken := ""
+	webLink := ""
+	if s.config.WebDomain != "" && u.Secret != "" {
+		bridgeToken = DeriveBridgeToken(s.config.WebDomain, u.Secret)
+		webLink = fmt.Sprintf("https://%s/?bridge=%s", strings.TrimSpace(s.config.WebDomain), bridgeToken)
+	}
+
+	return UserTelegramInfo{
+		Name:                 name,
+		Secret:               u.Secret,
+		MTProto:              u.MTProto,
+		Web:                  u.Web,
+		ServerMTProtoEnabled: s.config.Enabled,
+		ServerWebEnabled:     s.config.Enabled && s.config.WebEnabled,
+		MTProtoLink:          mtprotoLink,
+		WebLink:              webLink,
+		BridgeToken:          bridgeToken,
+		EntryIP:              s.entryIP,
+	}
+}
+
+func (s *Service) GetUser(name, currentHost string) (UserTelegramInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, err := s.getUserLocked(name)
+	if err != nil {
+		return UserTelegramInfo{}, err
+	}
+	return s.buildUserLinks(currentHost, name, u), nil
+}
+
+func (s *Service) SetUser(name string, u UserTelegramConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if u.Secret == "" {
+		sec, err := randomHexSecret()
+		if err != nil {
+			return err
+		}
+		u.Secret = sec
+	}
+	if err := s.saveUserLocked(name, u); err != nil {
+		return err
+	}
+	if s.config.Enabled {
+		_ = s.applyLocked(s.config)
+	}
+	return nil
+}
+
+func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sec, err := randomHexSecret()
+	if err != nil {
+		return UserTelegramInfo{}, err
+	}
+	u := UserTelegramConfig{
+		Secret:  sec,
+		MTProto: mtproto,
+		Web:     web,
+	}
+	if err := s.saveUserLocked(name, u); err != nil {
+		return UserTelegramInfo{}, err
+	}
+	if s.config.Enabled {
+		_ = s.applyLocked(s.config)
+	}
+	return s.buildUserLinks("", name, u), nil
+}
+
+func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, err := s.getUserLocked(name)
+	if err != nil {
+		return UserTelegramInfo{}, err
+	}
+	sec, err := randomHexSecret()
+	if err != nil {
+		return UserTelegramInfo{}, err
+	}
+	u.Secret = sec
+	if err := s.saveUserLocked(name, u); err != nil {
+		return UserTelegramInfo{}, err
+	}
+	if s.config.Enabled {
+		_ = s.applyLocked(s.config)
+	}
+	return s.buildUserLinks(currentHost, name, u), nil
+}
+
+func (s *Service) DeleteUser(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = os.Remove(s.userCfgPath(name))
+	if s.config.Enabled {
+		_ = s.applyLocked(s.config)
+	}
 }
 
 func (s *Service) NewSecret() (string, error) {
@@ -199,13 +427,7 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	host := currentHost
-	if host == "" || host == "127.0.0.1" || host == "localhost" {
-		host = s.entryIP
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
+	host := s.cleanHost(currentHost)
 
 	mtprotoLink := ""
 	if s.config.Secret != "" {

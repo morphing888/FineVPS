@@ -203,6 +203,10 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /users/{name}/disable", a.auth(a.userCmd("disable")))
 	api.HandleFunc("GET /users/{name}/qr.svg", a.auth(a.userQR))
 	api.HandleFunc("GET /users/{name}/conf", a.auth(a.userConf))
+	api.HandleFunc("GET /users/{name}/telegram", a.auth(a.userTelegramGet))
+	api.HandleFunc("POST /users/{name}/telegram", a.auth(a.userTelegramSave))
+	api.HandleFunc("POST /users/{name}/telegram/secret", a.auth(a.userTelegramNewSecret))
+	api.HandleFunc("GET /users/{name}/telegram/qr.svg", a.auth(a.userTelegramQR))
 	api.HandleFunc("GET /traffic", a.auth(a.traffic))
 	api.HandleFunc("POST /check", a.auth(a.check))
 	api.HandleFunc("POST /reconnect", a.auth(a.reconnect))
@@ -432,7 +436,9 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) userCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		TGMTProto *bool  `json:"tg_mtproto"`
+		TGWeb     *bool  `json:"tg_web"`
 	}
 	if json.NewDecoder(r.Body).Decode(&req) != nil || !nameRe.MatchString(req.Name) {
 		writeErr(w, http.StatusBadRequest, "Имя: латиница, цифры, дефис и подчёркивание, до 32 символов")
@@ -441,6 +447,17 @@ func (a *App) userCreate(w http.ResponseWriter, r *http.Request) {
 	if out, err := a.runCLI(r.Context(), "add", req.Name); err != nil {
 		writeErr(w, http.StatusConflict, lastLine(out))
 		return
+	}
+	if a.tg != nil {
+		mtproto := true
+		web := true
+		if req.TGMTProto != nil {
+			mtproto = *req.TGMTProto
+		}
+		if req.TGWeb != nil {
+			web = *req.TGWeb
+		}
+		_, _ = a.tg.InitUser(req.Name, mtproto, web)
 	}
 	writeJSON(w, map[string]string{"name": req.Name})
 }
@@ -463,6 +480,13 @@ func (a *App) userCmd(cmd string) http.HandlerFunc {
 		if out, err := a.runCLI(r.Context(), cmd, name); err != nil {
 			writeErr(w, http.StatusConflict, lastLine(out))
 			return
+		}
+		if a.tg != nil {
+			if cmd == "del" {
+				a.tg.DeleteUser(name)
+			} else if cmd == "enable" || cmd == "disable" {
+				_ = a.tg.ReloadUsers()
+			}
 		}
 		writeJSON(w, map[string]bool{"ok": true})
 	}
@@ -699,6 +723,108 @@ func (a *App) telegramNewSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a.tg.GetStatus(r.Host))
+}
+
+func (a *App) userTelegramGet(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	name, ok := a.userName(w, r)
+	if !ok {
+		return
+	}
+	info, err := a.tg.GetUser(name, r.Host)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, info)
+}
+
+func (a *App) userTelegramSave(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	name, ok := a.userName(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		MTProto bool   `json:"mtproto"`
+		Web     bool   `json:"web"`
+		Secret  string `json:"secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "Неверные данные: "+err.Error())
+		return
+	}
+	if err := a.tg.SetUser(name, tgproxy.UserTelegramConfig{
+		Secret:  req.Secret,
+		MTProto: req.MTProto,
+		Web:     req.Web,
+	}); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := a.tg.GetUser(name, r.Host)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, info)
+}
+
+func (a *App) userTelegramNewSecret(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	name, ok := a.userName(w, r)
+	if !ok {
+		return
+	}
+	info, err := a.tg.NewUserSecret(name, r.Host)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, info)
+}
+
+func (a *App) userTelegramQR(w http.ResponseWriter, r *http.Request) {
+	if a.tg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Сервис Telegram недоступен")
+		return
+	}
+	name, ok := a.userName(w, r)
+	if !ok {
+		return
+	}
+	info, err := a.tg.GetUser(name, r.Host)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	kind := r.URL.Query().Get("type")
+	text := info.MTProtoLink
+	if kind == "web" {
+		text = info.WebLink
+	}
+	if text == "" {
+		writeErr(w, http.StatusBadRequest, "Ссылка не сформирована")
+		return
+	}
+	cmd := exec.CommandContext(r.Context(), "qrencode", "-t", "SVG", "-m", "2", "-o", "-")
+	cmd.Stdin = strings.NewReader(text)
+	out, err := cmd.Output()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "Не удалось создать QR-код")
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	_, _ = w.Write(out)
 }
 
 func (a *App) Close() {

@@ -797,6 +797,16 @@ EOF
         awg set "$IF_CLIENTS" peer "$pub" preshared-key "$tmp" allowed-ips "$ip/32"
         rm -f "$tmp"
     fi
+    local tg_sec
+    tg_sec=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 -v | tr -d ' \n')
+    [[ -n $tg_sec && ${#tg_sec} -eq 32 ]] || tg_sec=$(awk 'BEGIN{srand(); for(i=0;i<16;i++) printf "%02x", int(rand()*256)}')
+    cat >"$USERS/$name.tg.json" <<EOF
+{
+  "secret": "$tg_sec",
+  "mtproto": true,
+  "web": true
+}
+EOF
     ok "пользователь $name создан, адрес $ip"
 }
 
@@ -827,7 +837,7 @@ cmd_del() {
     valid_name "$1"
     [[ -f $USERS/$1.conf ]] || die "пользователя $1 нет"
     if [[ -f $USERS/$1.peer ]]; then peer_remove "$USERS/$1.peer"; fi
-    rm -f "$USERS/$1.peer" "$USERS/$1.off" "$USERS/$1.conf"
+    rm -f "$USERS/$1.peer" "$USERS/$1.off" "$USERS/$1.conf" "$USERS/$1.tg.json"
     rebuild_clients_conf
     ok "пользователь $1 удалён"
 }

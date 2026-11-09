@@ -430,6 +430,21 @@ function stateOf(u) {
   if (u.lastHandshake) return ["", "Был " + ago(Date.now() / 1000 - u.lastHandshake)];
   return ["", "Не подключался"];
 }
+function copyText(text, msg = "Скопировано") {
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast(msg);
+}
+
 function renderUsers(list) {
   const box = $("users-list");
   if (document.querySelector("#users-list button:focus")) return; // не сбивать фокус при обновлении
@@ -442,6 +457,12 @@ function renderUsers(list) {
     const row = el("div", "user");
     const a = el("div");
     a.append(el("span", "user-name", u.name), el("span", "user-ip", u.ip));
+    if (u.tgMtproto || u.tgWeb) {
+      const tgTags = el("span", "user-tg-tags");
+      if (u.tgMtproto) tgTags.append(el("span", "user-tg-tag active", "TG"));
+      if (u.tgWeb) tgTags.append(el("span", "user-tg-tag active", "Web"));
+      a.append(tgTags);
+    }
     const [cls, text] = stateOf(u);
     const st = el("div");
     st.append(el("span", "tag " + cls, text));
@@ -450,7 +471,8 @@ function renderUsers(list) {
     const tot = el("div");
     tot.append(el("span", "cap", "За месяц"), el("span", "", bytes(u.monthDown + u.monthUp)));
     const act = el("div", "actions");
-    act.append(btn("QR-код", () => openQR(u.name)));
+    act.append(btn("QR-код", () => openQR(u.name, "wg")));
+    act.append(btn("Telegram", () => openTGUser(u.name)));
     act.append(btn(u.enabled ? "Отключить" : "Включить", () => toggle(u)));
     act.append(btn("Удалить", () => remove(u)));
     row.append(a, st, sp, tot, act);
@@ -469,17 +491,182 @@ function btn(text, fn) {
   };
   return b;
 }
-function openQR(name) {
+
+let curQRUser = "";
+let curQRTab = "wg";
+let curQRTGInfo = null;
+
+async function switchQRTab(tab) {
+  curQRTab = tab;
+  $("qr-tab-wg").setAttribute("aria-pressed", tab === "wg");
+  $("qr-tab-tg").setAttribute("aria-pressed", tab === "tg");
+  $("qr-tab-web").setAttribute("aria-pressed", tab === "web");
+
+  const enc = encodeURIComponent(curQRUser);
+  const img = $("qr-img");
+  const hint = $("qr-hint");
+  const fileBtn = $("qr-file");
+  const tgConnect = $("qr-tg-connect");
+  const tgCopy = $("qr-tg-copy");
+  const linkBox = $("qr-link-box");
+  const linkInp = $("qr-link-input");
+
+  if (tab === "wg") {
+    img.src = "api/users/" + enc + "/qr.svg";
+    hint.textContent = "Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.";
+    fileBtn.hidden = false;
+    tgConnect.hidden = true;
+    tgCopy.hidden = true;
+    linkBox.hidden = true;
+    return;
+  }
+
+  if (!curQRTGInfo || curQRTGInfo.name !== curQRUser) {
+    try {
+      curQRTGInfo = await api("users/" + enc + "/telegram");
+    } catch (e) {
+      hint.textContent = "Не удалось загрузить данные Telegram: " + e.message;
+      return;
+    }
+  }
+
+  fileBtn.hidden = true;
+  linkBox.hidden = false;
+
+  if (tab === "tg") {
+    img.src = "api/users/" + enc + "/telegram/qr.svg?type=mtproto";
+    const link = curQRTGInfo.mtproto_link || "";
+    linkInp.value = link;
+    hint.textContent = curQRTGInfo.mtproto ? "Отсканируй в Telegram или камерой для быстрого подключения." : "Внимание: MTProto прокси отключен для этого пользователя.";
+    tgConnect.hidden = !link;
+    tgConnect.href = link;
+    tgCopy.hidden = !link;
+    tgCopy.onclick = () => copyText(link, "MTProto ссылка скопирована");
+  } else if (tab === "web") {
+    img.src = "api/users/" + enc + "/telegram/qr.svg?type=web";
+    const link = curQRTGInfo.web_link || "";
+    linkInp.value = link;
+    hint.textContent = curQRTGInfo.web ? "Ссылка веб-моста для Telegram Web или приложения." : "Внимание: Web-мост отключен для этого пользователя.";
+    tgConnect.hidden = true;
+    tgCopy.hidden = !link;
+    tgCopy.onclick = () => copyText(link, "Web ссылка скопирована");
+  }
+}
+
+async function openQR(name, initialTab = "wg") {
+  curQRUser = name;
+  curQRTGInfo = null;
   const enc = encodeURIComponent(name);
   $("qr-title").textContent = name;
-  $("qr-img").src = "api/users/" + enc + "/qr.svg";
   $("qr-file").href = "api/users/" + enc + "/conf";
   $("qr-file").setAttribute("download", name + ".conf");
-  $("qr-file").style.display = "";
-  $("qr-dialog").querySelector(".hint").textContent = "Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.";
+  await switchQRTab(initialTab);
   $("qr-dialog").showModal();
 }
+
+$("qr-tab-wg").onclick = () => switchQRTab("wg");
+$("qr-tab-tg").onclick = () => switchQRTab("tg");
+$("qr-tab-web").onclick = () => switchQRTab("web");
 $("qr-close").onclick = () => $("qr-dialog").close();
+
+let curTGUser = "";
+
+async function openTGUser(name) {
+  curTGUser = name;
+  $("tgu-name").textContent = name;
+  const err = $("tgu-error");
+  const notice = $("tgu-notice");
+  err.hidden = true;
+  notice.hidden = true;
+
+  try {
+    const enc = encodeURIComponent(name);
+    const info = await api("users/" + enc + "/telegram");
+    $("tgu-opt-mtproto").checked = !!info.mtproto;
+    $("tgu-opt-web").checked = !!info.web;
+    $("tgu-secret").value = info.secret || "";
+    $("tgu-mtproto-link").value = info.mtproto_link || "";
+    $("tgu-mtproto-app").href = info.mtproto_link || "#";
+    $("tgu-web-link").value = info.web_link || "";
+
+    if (!info.server_mtproto_enabled) {
+      notice.textContent = "Внимание: MTProto прокси отключен в основных настройках Telegram.";
+      notice.hidden = false;
+    } else if (info.web && !info.server_web_enabled) {
+      notice.textContent = "Внимание: Web / CDN мост отключен в основных настройках Telegram.";
+      notice.hidden = false;
+    }
+
+    $("tgu-dialog").showModal();
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+}
+
+$("tgu-close").onclick = () => $("tgu-dialog").close();
+
+$("tgu-mtproto-copy").onclick = () => {
+  copyText($("tgu-mtproto-link").value, "MTProto ссылка скопирована");
+};
+
+$("tgu-mtproto-qr").onclick = () => {
+  $("tgu-dialog").close();
+  openQR(curTGUser, "tg");
+};
+
+$("tgu-web-copy").onclick = () => {
+  copyText($("tgu-web-link").value, "Web ссылка скопирована");
+};
+
+$("tgu-web-qr").onclick = () => {
+  $("tgu-dialog").close();
+  openQR(curTGUser, "web");
+};
+
+$("tgu-new-secret").onclick = async () => {
+  if (!curTGUser) return;
+  const enc = encodeURIComponent(curTGUser);
+  try {
+    const info = await api("users/" + enc + "/telegram/secret", { method: "POST" });
+    $("tgu-secret").value = info.secret || "";
+    $("tgu-mtproto-link").value = info.mtproto_link || "";
+    $("tgu-mtproto-app").href = info.mtproto_link || "#";
+    $("tgu-web-link").value = info.web_link || "";
+    toast("Секрет обновлён");
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+};
+
+$("tgu-save").onclick = async () => {
+  if (!curTGUser) return;
+  const err = $("tgu-error");
+  err.hidden = true;
+  const enc = encodeURIComponent(curTGUser);
+  const mtproto = $("tgu-opt-mtproto").checked;
+  const web = $("tgu-opt-web").checked;
+  const secret = $("tgu-secret").value.trim().toLowerCase();
+
+  if (secret.length !== 32 || !/^[0-9a-f]{32}$/.test(secret)) {
+    err.textContent = "Секрет должен состоять ровно из 32 шестнадцатеричных символов (0-9, a-f)";
+    err.hidden = false;
+    return;
+  }
+
+  try {
+    await api("users/" + enc + "/telegram", {
+      method: "POST",
+      body: { mtproto, web, secret }
+    });
+    toast("Настройки Telegram сохранены");
+    $("tgu-dialog").close();
+    refresh();
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
+};
+
 async function toggle(u) {
   const name = encodeURIComponent(u.name);
   if (u.enabled) {
@@ -504,12 +691,14 @@ async function remove(u) {
 }
 $("add-form").onsubmit = async ev => {
   ev.preventDefault();
-  const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button");
+  const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button[type=submit]");
+  const mtproto = $("add-tg-mtproto") ? $("add-tg-mtproto").checked : true;
+  const web = $("add-tg-web") ? $("add-tg-web").checked : true;
   err.hidden = true;
   b.disabled = true;
   try {
     const name = inp.value.trim();
-    await api("users", { method: "POST", body: { name } });
+    await api("users", { method: "POST", body: { name, tg_mtproto: mtproto, tg_web: web } });
     inp.value = "";
     await refresh();
     openQR(name);

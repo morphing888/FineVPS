@@ -2,6 +2,7 @@ package tgproxy
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,11 @@ func DeriveBridgeToken(host, secretHex string) string {
 	return config.CapabilityString(capBytes)
 }
 
+type UserProfile struct {
+	Name   string
+	Secret string
+}
+
 type TproxyEngine struct {
 	mu       sync.Mutex
 	server   *http.Server
@@ -38,17 +44,12 @@ func NewTproxyEngine() *TproxyEngine {
 	return &TproxyEngine{}
 }
 
-func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr, secretHex string) error {
+func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string, profiles []UserProfile) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.running {
 		t.stopLocked()
-	}
-
-	secretBytes, err := config.DecodeSecret(secretHex)
-	if err != nil {
-		return fmt.Errorf("invalid secret for tproxy: %w", err)
 	}
 
 	host := strings.TrimSpace(publicHost)
@@ -61,15 +62,42 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr, secret
 	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
 	cfg.AdminListen = "127.0.0.1:0"
 
-	capBytes := config.DeriveCapability(host, "", secretBytes)
-	profile := config.Profile{
-		Name:        "default",
-		Backend:     rawBackendAddr,
-		CarrierMode: config.CarrierWebSocket,
-		Capability:  capBytes,
+	var pList []config.Profile
+	seen := make(map[string]bool)
+	for _, prof := range profiles {
+		secHex := strings.TrimSpace(strings.ToLower(prof.Secret))
+		if secHex == "" || seen[secHex] {
+			continue
+		}
+		seen[secHex] = true
+		secretBytes, err := config.DecodeSecret(secHex)
+		if err != nil || len(secretBytes) == 0 {
+			continue
+		}
+		capBytes := config.DeriveCapability(host, "", secretBytes)
+		p := config.Profile{
+			Name:        prof.Name,
+			Backend:     rawBackendAddr,
+			CarrierMode: config.CarrierWebSocket,
+			Capability:  capBytes,
+		}
+		p.Limits = p.Limits.WithDefaults(cfg.Limits)
+		pList = append(pList, p)
 	}
-	profile.Limits = profile.Limits.WithDefaults(cfg.Limits)
-	cfg.Profiles = []config.Profile{profile}
+
+	if len(pList) == 0 {
+		dummySec, _ := hex.DecodeString("0123456789abcdef0123456789abcdef")
+		capBytes := config.DeriveCapability(host, "", dummySec)
+		p := config.Profile{
+			Name:        "default",
+			Backend:     rawBackendAddr,
+			CarrierMode: config.CarrierWebSocket,
+			Capability:  capBytes,
+		}
+		p.Limits = p.Limits.WithDefaults(cfg.Limits)
+		pList = append(pList, p)
+	}
+	cfg.Profiles = pList
 
 	if err := session.ValidateBudget(cfg); err != nil {
 		return fmt.Errorf("validate tproxy budget: %w", err)

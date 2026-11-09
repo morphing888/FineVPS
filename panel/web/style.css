@@ -316,3 +316,18 @@ dialog h2 { font-size: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .tg-connect-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .tg-link-input { font-family: monospace; font-size: 12px; color: var(--brand-ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 10px; width: 100%; cursor: text; }
 .tg-link-input:focus { border-color: var(--brand); outline: none; }
+
+/* Telegram per-user styles */
+.add-tg-row { display: flex; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
+.check-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+.check-pill input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; }
+.check-pill:hover { color: var(--soft); }
+.qr-tabs { justify-content: center; margin-bottom: 12px; }
+.qr-tabs button { font-size: 12.5px; padding: 5px 12px; }
+.tg-btn { border-color: rgba(59, 130, 246, 0.4); color: #60a5fa; }
+.tg-btn:hover { background: rgba(59, 130, 246, 0.15); }
+.user-tg-tags { display: inline-flex; gap: 4px; margin-left: 6px; }
+.user-tg-tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: var(--dim); }
+.user-tg-tag.active { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
+.tg-dialog { width: min(520px, calc(100vw - 32px)); }
+

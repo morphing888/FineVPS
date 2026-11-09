@@ -500,6 +500,8 @@ type UserInfo struct {
 	TodayUp       uint64  `json:"todayUp"`
 	MonthDown     uint64  `json:"monthDown"`
 	MonthUp       uint64  `json:"monthUp"`
+	TGMTProto     bool    `json:"tgMtproto"`
+	TGWeb         bool    `json:"tgWeb"`
 }
 
 func (c *Collector) Users(t time.Time) []UserInfo {
@@ -551,10 +553,26 @@ func listUsers(state string) []UserInfo {
 		if ext != ".peer" && ext != ".off" {
 			continue
 		}
+		name := strings.TrimSuffix(e.Name(), ext)
+		tgMTProto := true
+		tgWeb := true
+		tgPath := filepath.Join(dir, name+".tg.json")
+		if b, err := os.ReadFile(tgPath); err == nil {
+			var tc struct {
+				MTProto bool `json:"mtproto"`
+				Web     bool `json:"web"`
+			}
+			if json.Unmarshal(b, &tc) == nil {
+				tgMTProto = tc.MTProto
+				tgWeb = tc.Web
+			}
+		}
 		out = append(out, UserInfo{
-			Name:    strings.TrimSuffix(e.Name(), ext),
-			IP:      strings.TrimSuffix(peerField(filepath.Join(dir, e.Name()), "AllowedIPs"), "/32"),
-			Enabled: ext == ".peer",
+			Name:      name,
+			IP:        strings.TrimSuffix(peerField(filepath.Join(dir, e.Name()), "AllowedIPs"), "/32"),
+			Enabled:   ext == ".peer",
+			TGMTProto: tgMTProto,
+			TGWeb:     tgWeb,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })

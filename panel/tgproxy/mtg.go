@@ -91,7 +91,7 @@ func (n *mtgDeviceNetwork) NativeDialer() *net.Dialer {
 }
 
 type mtgActiveSpec struct {
-	Secret         string
+	Secrets        []string
 	TlsDomain      string
 	UpstreamDevice string
 	DirectPort     int
@@ -181,7 +181,11 @@ func (e *MtgEngine) Apply(spec mtgActiveSpec) error {
 	}
 
 	if e.proxy != nil &&
-		e.active == spec &&
+		slices.Equal(e.active.Secrets, spec.Secrets) &&
+		e.active.TlsDomain == spec.TlsDomain &&
+		e.active.UpstreamDevice == spec.UpstreamDevice &&
+		e.active.DirectPort == spec.DirectPort &&
+		e.active.RawAddr == spec.RawAddr &&
 		(spec.DirectEnabled == (e.directLis != nil)) &&
 		(spec.RawEnabled == (e.rawLis != nil)) {
 		return nil
@@ -203,10 +207,16 @@ func (e *MtgEngine) ConnectedCount() int64 {
 
 func (e *MtgEngine) startLocked(spec mtgActiveSpec) error {
 	var secrets []mtglib.Secret
-	if spec.Secret != "" {
-		sec0, err := parseMtgSecret(spec.Secret, spec.TlsDomain)
+	seen := make(map[string]bool)
+	for _, secHex := range spec.Secrets {
+		s := strings.TrimSpace(strings.ToLower(secHex))
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		sec0, err := parseMtgSecret(s, spec.TlsDomain)
 		if err != nil {
-			return err
+			continue
 		}
 		secrets = append(secrets, sec0)
 	}

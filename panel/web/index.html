@@ -203,6 +203,17 @@
           <input id="add-name" maxlength="32" autocomplete="off" spellcheck="false" placeholder="например, ivan-phone" required>
           <button class="primary" type="submit">Создать</button>
         </div>
+        <div class="add-tg-row">
+          <span class="dim" style="font-size: 13px;">Telegram:</span>
+          <label class="check-pill">
+            <input type="checkbox" id="add-tg-mtproto" checked>
+            <span>MTProto Proxy</span>
+          </label>
+          <label class="check-pill">
+            <input type="checkbox" id="add-tg-web" checked>
+            <span>Web / CDN мост</span>
+          </label>
+        </div>
         <p id="add-error" class="error" role="alert" hidden></p>
       </form>
       <div id="users-list"></div>
@@ -452,11 +463,83 @@
 
 <dialog id="qr-dialog">
   <h2 id="qr-title"></h2>
+  <div class="pills qr-tabs" role="group" aria-label="Формат подключения">
+    <button type="button" id="qr-tab-wg" aria-pressed="true">WireGuard</button>
+    <button type="button" id="qr-tab-tg" aria-pressed="false">Telegram MTProto</button>
+    <button type="button" id="qr-tab-web" aria-pressed="false">Telegram Web</button>
+  </div>
   <img id="qr-img" alt="QR-код настроек">
-  <p class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
+  <p id="qr-hint" class="hint">Отсканируй код в приложении AmneziaVPN или AmneziaWG либо скачай файл настроек.</p>
+  <div id="qr-link-box" class="tg-connect-card" hidden style="margin-top: 10px; margin-bottom: 12px;">
+    <input id="qr-link-input" readonly onclick="this.select()" spellcheck="false" class="tg-link-input" aria-label="Ссылка для подключения">
+  </div>
   <div class="buttons">
+    <a id="qr-tg-connect" class="button primary" href="#" target="_blank" hidden>Подключить в Telegram</a>
+    <button id="qr-tg-copy" type="button" hidden>Копировать ссылку</button>
     <a id="qr-file" class="button" download>Скачать файл</a>
     <button id="qr-close" type="button">Закрыть</button>
+  </div>
+</dialog>
+
+<dialog id="tgu-dialog" class="tg-dialog">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+    <h2 style="margin: 0; font-size: 18px;">Telegram: <span id="tgu-name"></span></h2>
+    <span id="tgu-status-tag" class="tag on">Включен</span>
+  </div>
+
+  <p class="hint" style="margin-bottom: 16px;">
+    Индивидуальный доступ к прокси Telegram. У каждого пользователя свой секрет.
+  </p>
+
+  <div class="card" style="background: rgba(0,0,0,0.18); padding: 12px 14px; margin-bottom: 14px; border-radius: 8px;">
+    <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">Разрешённые протоколы для пользователя:</div>
+    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+      <label class="check-pill">
+        <input type="checkbox" id="tgu-opt-mtproto">
+        <span>MTProto Proxy</span>
+      </label>
+      <label class="check-pill">
+        <input type="checkbox" id="tgu-opt-web">
+        <span>Web / CDN мост</span>
+      </label>
+    </div>
+  </div>
+
+  <div id="tgu-mtproto-box" class="tg-connect-card" style="margin-bottom: 12px;">
+    <div class="tg-connect-head">
+      <strong style="font-size: 13px;">MTProto Proxy</strong>
+      <div class="buttons" style="margin: 0; gap: 6px;">
+        <a id="tgu-mtproto-app" class="button primary small" href="#" target="_blank">Подключить</a>
+        <button id="tgu-mtproto-copy" class="small" type="button">Копировать</button>
+        <button id="tgu-mtproto-qr" class="small" type="button">QR-код</button>
+      </div>
+    </div>
+    <input id="tgu-mtproto-link" readonly onclick="this.select()" class="tg-link-input" aria-label="MTProto ссылка">
+  </div>
+
+  <div id="tgu-web-box" class="tg-connect-card" style="margin-bottom: 14px;">
+    <div class="tg-connect-head">
+      <strong style="font-size: 13px;">Telegram Web / CDN</strong>
+      <div class="buttons" style="margin: 0; gap: 6px;">
+        <button id="tgu-web-copy" class="small" type="button">Копировать</button>
+        <button id="tgu-web-qr" class="small" type="button">QR-код</button>
+      </div>
+    </div>
+    <input id="tgu-web-link" readonly onclick="this.select()" class="tg-link-input" aria-label="Web ссылка">
+  </div>
+
+  <label for="tgu-secret">Секрет пользователя (32 hex-символа)</label>
+  <div class="check-row" style="margin-top: 4px; margin-bottom: 14px;">
+    <input id="tgu-secret" style="font-family: monospace; font-size: 13px;" minlength="32" maxlength="32">
+    <button id="tgu-new-secret" type="button" style="white-space: nowrap;">Случайный</button>
+  </div>
+
+  <p id="tgu-notice" class="hint" style="color: var(--warn); margin-bottom: 10px;" hidden></p>
+  <p id="tgu-error" class="error" role="alert" hidden></p>
+
+  <div class="buttons" style="justify-content: flex-end; margin-top: 14px;">
+    <button id="tgu-close" type="button">Закрыть</button>
+    <button id="tgu-save" class="primary" type="button">Сохранить</button>
   </div>
 </dialog>
 
