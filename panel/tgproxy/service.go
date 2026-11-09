@@ -1,6 +1,7 @@
 package tgproxy
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Config struct {
@@ -20,6 +22,7 @@ type Config struct {
 	WebEnabled bool   `json:"web_enabled"`
 	WebDomain  string `json:"web_domain"`
 	WebPort    int    `json:"web_port"`
+	RawAddr    string `json:"raw_addr,omitempty"`
 }
 
 type StatusResponse struct {
@@ -93,6 +96,49 @@ func (s *Service) userCfgPath(name string) string {
 	return filepath.Join(s.stateDir, "users", name+".tg.json")
 }
 
+func validateSecret(hexKey string) error {
+	hexKey = strings.TrimSpace(strings.ToLower(hexKey))
+	if len(hexKey) != 32 {
+		return fmt.Errorf("secret must be exactly 32 hex characters (16 bytes), got length %d", len(hexKey))
+	}
+	b, err := hex.DecodeString(hexKey)
+	if err != nil || len(b) != 16 {
+		return fmt.Errorf("invalid secret hex: %v", err)
+	}
+	return nil
+}
+
+func saveAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.tmp.%d", path, time.Now().UnixNano())
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 func (s *Service) load() {
 	p := s.cfgPath()
 	data, err := os.ReadFile(p)
@@ -122,25 +168,29 @@ func (s *Service) load() {
 }
 
 func (s *Service) saveLocked() error {
-	dir := filepath.Dir(s.cfgPath())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(s.config, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.cfgPath(), b, 0o600)
+	return saveAtomic(s.cfgPath(), b, 0o600)
+}
+
+func (s *Service) getUserConfigOnly(name string) (UserTelegramConfig, bool) {
+	p := s.userCfgPath(name)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return UserTelegramConfig{}, false
+	}
+	var u UserTelegramConfig
+	if err := json.Unmarshal(data, &u); err != nil || u.Secret == "" {
+		return UserTelegramConfig{}, false
+	}
+	return u, true
 }
 
 func (s *Service) getUserLocked(name string) (UserTelegramConfig, error) {
-	p := s.userCfgPath(name)
-	data, err := os.ReadFile(p)
-	if err == nil {
-		var u UserTelegramConfig
-		if json.Unmarshal(data, &u) == nil && u.Secret != "" {
-			return u, nil
-		}
+	if u, ok := s.getUserConfigOnly(name); ok {
+		return u, nil
 	}
 	sec, err := randomHexSecret()
 	if err != nil {
@@ -151,20 +201,18 @@ func (s *Service) getUserLocked(name string) (UserTelegramConfig, error) {
 		MTProto: true,
 		Web:     true,
 	}
-	_ = s.saveUserLocked(name, u)
+	if err := s.saveUserLocked(name, u); err != nil {
+		return UserTelegramConfig{}, err
+	}
 	return u, nil
 }
 
 func (s *Service) saveUserLocked(name string, u UserTelegramConfig) error {
-	dir := filepath.Dir(s.userCfgPath(name))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.userCfgPath(name), b, 0o600)
+	return saveAtomic(s.userCfgPath(name), b, 0o600)
 }
 
 func (s *Service) Start() error {
@@ -183,10 +231,10 @@ func (s *Service) Stop() {
 func (s *Service) Apply(newCfg Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if newCfg.Port <= 0 {
+	if newCfg.Port <= 0 || newCfg.Port > 65535 {
 		newCfg.Port = 8443
 	}
-	if newCfg.WebPort <= 0 {
+	if newCfg.WebPort <= 0 || newCfg.WebPort > 65535 {
 		newCfg.WebPort = 8085
 	}
 	if newCfg.TLSDomain == "" {
@@ -198,24 +246,38 @@ func (s *Service) Apply(newCfg Config) error {
 	if newCfg.Secret == "" {
 		newCfg.Secret = s.config.Secret
 	}
-	if err := s.applyLocked(newCfg); err != nil {
-		return err
+	if err := validateSecret(newCfg.Secret); err != nil {
+		return fmt.Errorf("validate secret: %w", err)
 	}
+
+	oldCfg := s.config
+
+	if err := s.applyLocked(newCfg); err != nil {
+		_ = s.applyLocked(oldCfg)
+		return fmt.Errorf("apply configuration: %w", err)
+	}
+
 	s.config = newCfg
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.config = oldCfg
+		_ = s.applyLocked(oldCfg)
+		_ = s.saveLocked()
+		return fmt.Errorf("save configuration: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ReloadUsers() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.config.Enabled {
+	if s.config.Enabled || s.config.WebEnabled {
 		return s.applyLocked(s.config)
 	}
 	return nil
 }
 
 func (s *Service) applyLocked(cfg Config) error {
-	if !cfg.Enabled {
+	if !cfg.Enabled && !cfg.WebEnabled {
 		s.tproxy.Stop()
 		s.mtg.Stop()
 		return nil
@@ -226,7 +288,10 @@ func (s *Service) applyLocked(cfg Config) error {
 		upstreamDev = "awguplink"
 	}
 
-	rawAddr := "127.0.0.1:2398"
+	rawAddr := cfg.RawAddr
+	if rawAddr == "" {
+		rawAddr = "127.0.0.1:2398"
+	}
 
 	var directSecrets []UserSecret
 	var rawSecrets []UserSecret
@@ -285,7 +350,7 @@ func (s *Service) applyLocked(cfg Config) error {
 		UpstreamDevice: upstreamDev,
 		DirectPort:     cfg.Port,
 		RawAddr:        rawAddr,
-		DirectEnabled:  true,
+		DirectEnabled:  cfg.Enabled,
 		RawEnabled:     cfg.WebEnabled,
 	}
 
@@ -295,6 +360,7 @@ func (s *Service) applyLocked(cfg Config) error {
 
 	if cfg.WebEnabled {
 		if err := s.tproxy.Start(cfg.WebDomain, cfg.WebPort, rawAddr, tproxyProfiles); err != nil {
+			s.mtg.Stop()
 			return fmt.Errorf("start tproxy engine: %w", err)
 		}
 	} else {
@@ -349,7 +415,7 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 		MTProto:              u.MTProto,
 		Web:                  u.Web,
 		ServerMTProtoEnabled: s.config.Enabled,
-		ServerWebEnabled:     s.config.Enabled && s.config.WebEnabled,
+		ServerWebEnabled:     s.config.WebEnabled,
 		MTProtoLink:          mtprotoLink,
 		WebLink:              webLink,
 		WebTmeLink:           webTmeLink,
@@ -380,12 +446,25 @@ func (s *Service) SetUser(name string, u UserTelegramConfig) error {
 			return err
 		}
 		u.Secret = sec
-	}
-	if err := s.saveUserLocked(name, u); err != nil {
+	} else if err := validateSecret(u.Secret); err != nil {
 		return err
 	}
-	if s.config.Enabled {
-		_ = s.applyLocked(s.config)
+
+	oldU, hadOld := s.getUserConfigOnly(name)
+	if err := s.saveUserLocked(name, u); err != nil {
+		return fmt.Errorf("save user %s config: %w", name, err)
+	}
+
+	if s.config.Enabled || s.config.WebEnabled {
+		if err := s.applyLocked(s.config); err != nil {
+			if hadOld {
+				_ = s.saveUserLocked(name, oldU)
+			} else {
+				_ = os.Remove(s.userCfgPath(name))
+			}
+			_ = s.applyLocked(s.config)
+			return fmt.Errorf("apply configuration for user %s: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -403,10 +482,14 @@ func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, er
 		Web:     web,
 	}
 	if err := s.saveUserLocked(name, u); err != nil {
-		return UserTelegramInfo{}, err
+		return UserTelegramInfo{}, fmt.Errorf("save initialized user %s: %w", name, err)
 	}
-	if s.config.Enabled {
-		_ = s.applyLocked(s.config)
+	if s.config.Enabled || s.config.WebEnabled {
+		if err := s.applyLocked(s.config); err != nil {
+			_ = os.Remove(s.userCfgPath(name))
+			_ = s.applyLocked(s.config)
+			return UserTelegramInfo{}, fmt.Errorf("apply configuration for user %s: %w", name, err)
+		}
 	}
 	return s.buildUserLinks("", name, u), nil
 }
@@ -414,9 +497,14 @@ func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, er
 func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	u, err := s.getUserLocked(name)
-	if err != nil {
-		return UserTelegramInfo{}, err
+	oldU, hadOld := s.getUserConfigOnly(name)
+	u := oldU
+	if !hadOld {
+		var err error
+		u, err = s.getUserLocked(name)
+		if err != nil {
+			return UserTelegramInfo{}, err
+		}
 	}
 	sec, err := randomHexSecret()
 	if err != nil {
@@ -424,34 +512,62 @@ func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, err
 	}
 	u.Secret = sec
 	if err := s.saveUserLocked(name, u); err != nil {
-		return UserTelegramInfo{}, err
+		return UserTelegramInfo{}, fmt.Errorf("save user %s secret: %w", name, err)
 	}
-	if s.config.Enabled {
-		_ = s.applyLocked(s.config)
+	if s.config.Enabled || s.config.WebEnabled {
+		if err := s.applyLocked(s.config); err != nil {
+			if hadOld {
+				_ = s.saveUserLocked(name, oldU)
+			} else {
+				_ = os.Remove(s.userCfgPath(name))
+			}
+			_ = s.applyLocked(s.config)
+			return UserTelegramInfo{}, fmt.Errorf("apply new secret for user %s: %w", name, err)
+		}
 	}
 	return s.buildUserLinks(currentHost, name, u), nil
 }
 
-func (s *Service) DeleteUser(name string) {
+func (s *Service) DeleteUser(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = os.Remove(s.userCfgPath(name))
-	if s.config.Enabled {
-		_ = s.applyLocked(s.config)
+	oldU, hadOld := s.getUserConfigOnly(name)
+	p := s.userCfgPath(name)
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete user file %s: %w", p, err)
 	}
+	if s.config.Enabled || s.config.WebEnabled {
+		if err := s.applyLocked(s.config); err != nil {
+			if hadOld {
+				_ = s.saveUserLocked(name, oldU)
+			}
+			_ = s.applyLocked(s.config)
+			return fmt.Errorf("apply after deleting user %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) NewSecret() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldSec := s.config.Secret
 	sec, err := randomHexSecret()
 	if err != nil {
 		return "", err
 	}
 	s.config.Secret = sec
-	_ = s.saveLocked()
-	if s.config.Enabled {
-		_ = s.applyLocked(s.config)
+	if err := s.saveLocked(); err != nil {
+		s.config.Secret = oldSec
+		return "", fmt.Errorf("save new secret: %w", err)
+	}
+	if s.config.Enabled || s.config.WebEnabled {
+		if err := s.applyLocked(s.config); err != nil {
+			s.config.Secret = oldSec
+			_ = s.saveLocked()
+			_ = s.applyLocked(s.config)
+			return "", fmt.Errorf("apply new secret: %w", err)
+		}
 	}
 	return sec, nil
 }
@@ -487,8 +603,8 @@ func (s *Service) GetStatus(currentHost string) StatusResponse {
 		webTmeLink = fmt.Sprintf("https://t.me/webproxy?server=%s&port=443&secret=%s", cleanWebDomain, cleanSecret)
 	}
 
-	running := s.config.Enabled && s.mtg.directLis != nil
-	webRunning := s.config.Enabled && s.config.WebEnabled && s.tproxy.IsRunning()
+	running := s.config.Enabled && s.mtg.IsRunning()
+	webRunning := s.config.WebEnabled && s.tproxy.IsRunning()
 
 	return StatusResponse{
 		Enabled:     s.config.Enabled,
@@ -516,4 +632,12 @@ func (s *Service) GetUserStats() map[string]UserStats {
 		return nil
 	}
 	return s.mtg.GetUserStats()
+}
+
+func randomHexSecret() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

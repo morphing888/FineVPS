@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"awgcascade/panel/tgproxy/tproxy/config"
@@ -33,34 +34,83 @@ type UserProfile struct {
 	Secret string
 }
 
+func sameProfiles(a, b []UserProfile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Secret != b[i].Secret {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneProfiles(src []UserProfile) []UserProfile {
+	if src == nil {
+		return nil
+	}
+	out := make([]UserProfile, len(src))
+	copy(out, src)
+	return out
+}
+
+type dynamicHandler struct {
+	handler atomic.Pointer[http.Handler]
+}
+
+func (d *dynamicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h := d.handler.Load()
+	if h != nil {
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+}
+
 type TproxyEngine struct {
-	stateDir string
-	mu       sync.Mutex
-	server   *http.Server
-	app      *appserver.Server
-	listener net.Listener
-	running  bool
-	host     string
-	port     int
+	stateDir       string
+	mu             sync.Mutex
+	server         *http.Server
+	app            *appserver.Server
+	dynHandler     *dynamicHandler
+	listener       net.Listener
+	running        bool
+	host           string
+	port           int
+	rawBackendAddr string
+	profiles       []UserProfile
 }
 
 func NewTproxyEngine(stateDir string) *TproxyEngine {
 	return &TproxyEngine{stateDir: stateDir}
 }
 
+// Start applies Web Proxy configuration non-destructively:
+// - If the configuration is identical, Start is an immediate no-op.
+// - If the listening port is unchanged and the engine is already running,
+//   the app server handler is swapped dynamically without closing the TCP listener,
+//   preventing dropped web sessions.
+// - If the port changes or the engine is stopped, candidate validation and candidate
+//   net.Listen are performed prior to stopping the previous instance to ensure rollback safety.
+//
+// Carrier mode: TproxyEngine explicitly configures CarrierHTTPS (HTTPS carrier).
 func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string, profiles []UserProfile) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if t.running {
-		t.stopLocked()
-	}
 
 	host := strings.TrimSpace(publicHost)
 	if host == "" {
 		host = "direct-only.invalid"
 	}
 
+	// 1. No-op check if running and identical
+	if t.running && t.host == host && t.port == port &&
+		t.rawBackendAddr == rawBackendAddr && sameProfiles(t.profiles, profiles) {
+		return nil
+	}
+
+	// 2. Build candidate configuration
 	cfg := config.Defaults()
 	cfg.PublicHostname = host
 	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
@@ -123,34 +173,66 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 	}
 	cfg.Profiles = pList
 
+	// 3. Candidate budget validation
 	if err := session.ValidateBudget(cfg); err != nil {
 		return fmt.Errorf("validate tproxy budget: %w", err)
 	}
 
-	app, err := appserver.New(cfg)
+	// 4. Candidate app server initialization
+	candidateApp, err := appserver.New(cfg)
 	if err != nil {
 		return fmt.Errorf("init tproxy appserver: %w", err)
 	}
 
+	// 5. In-place handler swap if already running on same port
+	if t.running && t.port == port && t.server != nil && t.dynHandler != nil {
+		candidateHandler := candidateApp.Handler()
+		t.dynHandler.handler.Store(&candidateHandler)
+
+		oldApp := t.app
+		t.app = candidateApp
+		t.host = host
+		t.rawBackendAddr = rawBackendAddr
+		t.profiles = cloneProfiles(profiles)
+
+		if oldApp != nil {
+			go oldApp.Shutdown()
+		}
+		return nil
+	}
+
+	// 6. Port changed or first start: pre-bind candidate listener before stopping old
 	lis, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		app.Shutdown()
+		candidateApp.Shutdown()
 		return fmt.Errorf("listen tproxy on %s: %w", cfg.Listen, err)
 	}
 
+	dyn := &dynamicHandler{}
+	candHandler := candidateApp.Handler()
+	dyn.handler.Store(&candHandler)
+
 	srv := &http.Server{
-		Handler:           app.Handler(),
+		Handler:           dyn,
 		ReadHeaderTimeout: cfg.Timeouts.ReadHeader.Value(),
 		ReadTimeout:       60 * time.Second,
 		IdleTimeout:       cfg.Timeouts.Idle.Value(),
 	}
 
+	// Stop previous instance now that new listener is confirmed
+	if t.running {
+		t.stopLocked()
+	}
+
 	t.server = srv
-	t.app = app
+	t.app = candidateApp
+	t.dynHandler = dyn
 	t.listener = lis
 	t.running = true
 	t.host = host
 	t.port = port
+	t.rawBackendAddr = rawBackendAddr
+	t.profiles = cloneProfiles(profiles)
 
 	go func() {
 		_ = srv.Serve(lis)
@@ -180,6 +262,8 @@ func (t *TproxyEngine) stopLocked() {
 		t.app.Shutdown()
 		t.app = nil
 	}
+	t.dynHandler = nil
+	t.profiles = nil
 	t.running = false
 }
 

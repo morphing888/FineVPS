@@ -2,6 +2,7 @@ package tgproxy
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestServiceLinks(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	svc := NewService(tmpDir, "87.228.113.192")
+	svc := NewService(tmpDir, "192.0.2.10")
 	sec := "0123456789abcdef0123456789abcdef"
 	cfg := Config{
 		Enabled:    true,
@@ -45,9 +46,9 @@ func TestServiceLinks(t *testing.T) {
 	}
 
 	svc.config = cfg
-	st := svc.GetStatus("87.228.113.192")
+	st := svc.GetStatus("192.0.2.10")
 
-	if !strings.HasPrefix(st.MTProtoLink, "tg://proxy?server=87.228.113.192&port=8443&secret=ee0123456789abcdef0123456789abcdef") {
+	if !strings.HasPrefix(st.MTProtoLink, "tg://proxy?server=192.0.2.10&port=8443&secret=ee0123456789abcdef0123456789abcdef") {
 		t.Fatalf("unexpected mtproto link: %s", st.MTProtoLink)
 	}
 	// ya.ru in hex is 79612e7275
@@ -76,19 +77,27 @@ func TestUserTelegram(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	svc := NewService(tmpDir, "87.228.113.192")
+	svc := NewService(tmpDir, "192.0.2.10")
+	defer svc.Stop()
+
+	directPort := getFreeTestPort(t)
+	webPort := getFreeTestPort(t)
+	rawPort := getFreeTestPort(t)
+	rawAddr := fmt.Sprintf("127.0.0.1:%d", rawPort)
+
 	svc.config = Config{
 		Enabled:    true,
-		Port:       8443,
+		Port:       directPort,
 		Secret:     "0123456789abcdef0123456789abcdef",
 		TLSDomain:  "ya.ru",
 		WebEnabled: true,
 		WebDomain:  "tg.example.com",
-		WebPort:    8085,
+		WebPort:    webPort,
+		RawAddr:    rawAddr,
 	}
 
 	// 1. Auto-generate user config on GetUser
-	u1, err := svc.GetUser("user1", "87.228.113.192")
+	u1, err := svc.GetUser("user1", "192.0.2.10")
 	if err != nil {
 		t.Fatalf("GetUser error: %v", err)
 	}
@@ -98,7 +107,8 @@ func TestUserTelegram(t *testing.T) {
 	if !u1.MTProto || !u1.Web {
 		t.Fatalf("expected default MTProto=true Web=true")
 	}
-	if !strings.HasPrefix(u1.MTProtoLink, "tg://proxy?server=87.228.113.192&port=8443&secret=ee"+u1.Secret) {
+	expectedMTProtoPrefix := fmt.Sprintf("tg://proxy?server=192.0.2.10&port=%d&secret=ee", directPort) + u1.Secret
+	if !strings.HasPrefix(u1.MTProtoLink, expectedMTProtoPrefix) {
 		t.Fatalf("unexpected user mtproto link: %s", u1.MTProtoLink)
 	}
 	if u1.WebLink != "tg://webproxy?server=tg.example.com&port=443&secret="+u1.Secret {
@@ -117,13 +127,13 @@ func TestUserTelegram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetUser error: %v", err)
 	}
-	u1Updated, _ := svc.GetUser("user1", "87.228.113.192")
+	u1Updated, _ := svc.GetUser("user1", "192.0.2.10")
 	if u1Updated.MTProto {
 		t.Fatalf("expected MTProto=false after update")
 	}
 
 	// 3. NewUserSecret
-	u1NewSec, err := svc.NewUserSecret("user1", "87.228.113.192")
+	u1NewSec, err := svc.NewUserSecret("user1", "192.0.2.10")
 	if err != nil {
 		t.Fatalf("NewUserSecret error: %v", err)
 	}

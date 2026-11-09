@@ -458,7 +458,9 @@ func (a *App) userCreate(w http.ResponseWriter, r *http.Request) {
 		if req.TGWeb != nil {
 			web = *req.TGWeb
 		}
-		_, _ = a.tg.InitUser(req.Name, mtproto, web)
+		if _, err := a.tg.InitUser(req.Name, mtproto, web); err != nil {
+			log.Printf("telegram proxy init user %s error: %v", req.Name, err)
+		}
 	}
 	writeJSON(w, map[string]string{"name": req.Name})
 }
@@ -484,9 +486,13 @@ func (a *App) userCmd(cmd string) http.HandlerFunc {
 		}
 		if a.tg != nil {
 			if cmd == "del" {
-				a.tg.DeleteUser(name)
+				if err := a.tg.DeleteUser(name); err != nil {
+					log.Printf("telegram proxy delete user %s error: %v", name, err)
+				}
 			} else if cmd == "enable" || cmd == "disable" {
-				_ = a.tg.ReloadUsers()
+				if err := a.tg.ReloadUsers(); err != nil {
+					log.Printf("telegram proxy reload error: %v", err)
+				}
 			}
 		}
 		writeJSON(w, map[string]bool{"ok": true})
