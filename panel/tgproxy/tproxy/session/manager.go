@@ -268,6 +268,10 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 	if activeProfile == nil || !isProfileRetained(profile, snap.profiles, m.config.Limits) {
 		return "", ErrAuthentication
 	}
+	if m.config.IPGuard != nil && m.config.IPGuard.IsCoolingDown(activeProfile.Name, clientIP) {
+		m.limitHits.Add(1)
+		return "", ErrAuthentication
+	}
 	now := time.Now()
 	m.removeExpiredBootstrapsLocked(now)
 	if (m.config.Limits.MaxBootstrapsPerIP != 0 &&
@@ -296,12 +300,20 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 }
 
 func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, error) {
+	res, evictFns, err := m.createLocked(token, clientIP, body)
+	for _, fn := range evictFns {
+		fn()
+	}
+	return res, err
+}
+
+func (m *Manager) createLocked(token, clientIP string, body []byte) (CreateResult, []func(), error) {
 	if err := frame.ParseHello(body); err != nil {
-		return CreateResult{}, ErrProtocol
+		return CreateResult{}, nil, ErrProtocol
 	}
 	tokenHash, err := tokenHash(token)
 	if err != nil {
-		return CreateResult{}, ErrAuthentication
+		return CreateResult{}, nil, ErrAuthentication
 	}
 	bodyDigest := sha256.Sum256(body)
 	now := time.Now()
@@ -310,22 +322,26 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 	defer m.mu.Unlock()
 	entry := m.bootstraps[tokenHash]
 	if entry == nil || now.After(entry.expires) {
-		return CreateResult{}, ErrAuthentication
+		return CreateResult{}, nil, ErrAuthentication
 	}
 	snap := m.profilesSnap.Load()
 	if snap == nil || !isProfileRetained(entry.profile, snap.profiles, m.config.Limits) {
 		m.removeBootstrapLocked(tokenHash, entry)
-		return CreateResult{}, ErrAuthentication
+		return CreateResult{}, nil, ErrAuthentication
 	}
 	if entry.used {
 		if subtle.ConstantTimeCompare(entry.bodyDigest[:], bodyDigest[:]) != 1 || entry.session == nil {
-			return CreateResult{}, ErrAuthentication
+			return CreateResult{}, nil, ErrAuthentication
 		}
 		return CreateResult{
 			Token:   entry.sessionToken,
 			Welcome: frame.Encode(frame.Welcome, 0, nil),
 			Session: entry.session,
-		}, nil
+		}, nil, nil
+	}
+	if m.config.IPGuard != nil && m.config.IPGuard.IsCoolingDown(entry.profile.Name, clientIP) {
+		m.limitHits.Add(1)
+		return CreateResult{}, nil, ErrAuthentication
 	}
 	profileLimits := entry.profile.Limits
 	if m.closed ||
@@ -334,7 +350,7 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		(m.config.Limits.MaxSessionsPerIP != 0 &&
 			m.sessionsPerIP[clientIP] >= m.config.Limits.MaxSessionsPerIP) {
 		m.limitHits.Add(1)
-		return CreateResult{}, ErrLimit
+		return CreateResult{}, nil, ErrLimit
 	}
 	if !allowProfileRateLocked(
 		&m.sessionRate,
@@ -346,11 +362,11 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		profileLimits.NewSessionsPerMinute,
 		profileLimits.NewSessionsBurst) {
 		m.limitHits.Add(1)
-		return CreateResult{}, ErrLimit
+		return CreateResult{}, nil, ErrLimit
 	}
 	sessionToken, sessionHash, err := m.newToken(TokenSession)
 	if err != nil {
-		return CreateResult{}, err
+		return CreateResult{}, nil, err
 	}
 	limits := m.config.Limits
 	limits.MaxStreamsPerSession = profileLimits.MaxStreamsPerSession
@@ -358,6 +374,7 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 	created := newSession(sessionOptions{
 		profile:       entry.profile,
 		clientIP:      clientIP,
+		guardID:       sessionToken,
 		limits:        limits,
 		timeouts:      m.config.Timeouts,
 		budget:        m.changePendingBudget,
@@ -374,6 +391,15 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		onUp:   func(count int) { m.bytesUp.Add(uint64(count)) },
 		onDown: func(count int) { m.bytesDown.Add(uint64(count)) },
 	})
+	var evictFns []func()
+	if m.config.IPGuard != nil {
+		allowed, fns := m.config.IPGuard.AcquireSessionDetached(entry.profile.Name, clientIP, sessionToken, created.Close)
+		if !allowed {
+			m.limitHits.Add(1)
+			return CreateResult{}, nil, ErrAuthentication
+		}
+		evictFns = fns
+	}
 	m.sessions[sessionHash] = created
 	m.sessionsPerIP[clientIP]++
 	m.sessionsPerProfile[entry.profile.Name]++
@@ -387,7 +413,7 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		Token:   sessionToken,
 		Welcome: frame.Encode(frame.Welcome, 0, nil),
 		Session: created,
-	}, nil
+	}, evictFns, nil
 }
 
 func (m *Manager) HasBootstrap(token string) bool {
@@ -483,6 +509,17 @@ func (m *Manager) Shutdown() {
 	<-m.done
 }
 
+func (m *Manager) ObserveClientIP(value *Session, clientIP string) bool {
+	if m.config.IPGuard == nil || value == nil || value.guardID == "" {
+		return true
+	}
+	if !m.config.IPGuard.ObserveSession(value.profile.Name, value.guardID, clientIP) {
+		value.Close()
+		return false
+	}
+	return true
+}
+
 func (m *Manager) sessionFinished(value *Session) {
 	m.mu.Lock()
 	for hash, current := range m.sessions {
@@ -517,6 +554,9 @@ func (m *Manager) sessionFinished(value *Session) {
 		}
 	}
 	m.mu.Unlock()
+	if m.config.IPGuard != nil && value.guardID != "" && value.profile != nil {
+		m.config.IPGuard.ReleaseSession(value.profile.Name, value.guardID)
+	}
 	m.sessionsClosed.Add(1)
 }
 

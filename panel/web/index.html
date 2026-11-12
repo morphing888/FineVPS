@@ -207,6 +207,7 @@
           <span class="dim" style="font-size: 13px;">Telegram:</span>
           <button type="button" id="add-tg-btn" class="tag-btn on" title="MTProto Proxy">TG</button>
           <button type="button" id="add-web-btn" class="tag-btn on" title="Telegram Web Proxy">WEB</button>
+          <button type="button" id="add-ip-btn" class="tag-btn ip-limit" title="Лимит активных IP Telegram (нажми для смены: 1 → 2 → ∞)">1 IP</button>
         </div>
         <p id="add-error" class="error" role="alert" hidden></p>
       </form>
@@ -491,6 +492,13 @@
     <button id="sec-random" type="button" style="white-space: nowrap;">Случайный</button>
   </div>
   <p class="hint" style="margin-top: 0; margin-bottom: 14px;">При смене секрета старые ссылки пользователя перестанут работать.</p>
+  <label>Лимит активных IP (Telegram)</label>
+  <div class="pills" id="sec-ip-pills" role="group" aria-label="Лимит активных IP" style="margin-bottom: 6px;">
+    <button type="button" data-max-ips="1" aria-pressed="true">1 IP</button>
+    <button type="button" data-max-ips="2" aria-pressed="false">2 IP</button>
+    <button type="button" data-max-ips="-1" aria-pressed="false">Без лимита (∞)</button>
+  </div>
+  <p class="hint" style="margin-top: 0; margin-bottom: 14px;">При входе с нового IP старый адрес отключается с паузой 15 сек.</p>
   <p id="sec-error" class="error" role="alert" hidden></p>
   <div class="buttons" style="justify-content: flex-end; margin-top: 16px;">
     <button id="sec-close" type="button">Закрыть</button>

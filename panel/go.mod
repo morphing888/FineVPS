@@ -1,6 +1,6 @@
 module awgcascade/panel
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/9seconds/mtg/v2 v2.2.8
