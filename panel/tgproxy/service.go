@@ -59,6 +59,7 @@ type UserTelegramConfig struct {
 	Secret  string `json:"secret"`
 	MTProto bool   `json:"mtproto"`
 	Web     bool   `json:"web"`
+	MaxIPs  int    `json:"max_ips,omitempty"`
 }
 
 type UserTelegramInfo struct {
@@ -66,6 +67,7 @@ type UserTelegramInfo struct {
 	Secret               string `json:"secret"`
 	MTProto              bool   `json:"mtproto"`
 	Web                  bool   `json:"web"`
+	MaxIPs               int    `json:"max_ips"`
 	ServerMTProtoEnabled bool   `json:"server_mtproto_enabled"`
 	ServerWebEnabled     bool   `json:"server_web_enabled"`
 	MTProtoLink          string `json:"mtproto_link"`
@@ -83,6 +85,7 @@ type Service struct {
 	stateDir         string
 	entryIP          string
 	config           Config
+	ipGuard          *UserIPGuard
 	mtg              *MtgEngine
 	tproxy           *TproxyEngine
 	recoveryRequired bool
@@ -95,14 +98,27 @@ type Service struct {
 }
 
 func NewService(stateDir, entryIP string) *Service {
+	guard := NewUserIPGuard(DefaultEvictCooldown)
+	mtg := NewMtgEngine()
+	mtg.SetIPGuard(guard)
+	tp := NewTproxyEngine(stateDir)
+	tp.SetIPGuard(guard)
 	s := &Service{
 		stateDir: stateDir,
 		entryIP:  entryIP,
-		mtg:      NewMtgEngine(),
-		tproxy:   NewTproxyEngine(stateDir),
+		ipGuard:  guard,
+		mtg:      mtg,
+		tproxy:   tp,
 	}
 	s.load()
 	return s
+}
+
+func (s *Service) IPGuard() *UserIPGuard {
+	if s == nil {
+		return nil
+	}
+	return s.ipGuard
 }
 
 func (s *Service) NeedsRecovery() (bool, error) {
@@ -274,6 +290,7 @@ func (s *Service) readExistingUserLocked(name string) (UserTelegramConfig, bool,
 	if err := validateSecret(u.Secret); err != nil {
 		return UserTelegramConfig{}, true, fmt.Errorf("validate user %s secret: %w", name, err)
 	}
+	u.MaxIPs = NormalizeMaxIPs(u.MaxIPs)
 	return u, true, nil
 }
 
@@ -293,6 +310,7 @@ func (s *Service) getUserLocked(name string) (UserTelegramConfig, error) {
 		Secret:  sec,
 		MTProto: true,
 		Web:     true,
+		MaxIPs:  DefaultUserMaxIPs,
 	}
 	if err := s.saveUserLocked(name, u); err != nil {
 		return UserTelegramConfig{}, err
@@ -502,6 +520,7 @@ func (s *Service) applyLocked(cfg Config) error {
 	if !cfg.Enabled && !cfg.WebEnabled {
 		s.tproxy.Stop()
 		s.mtg.Stop()
+		s.ipGuard.SetUserLimits(nil)
 		return nil
 	}
 
@@ -537,6 +556,7 @@ func (s *Service) applyLocked(cfg Config) error {
 		})
 	}
 
+	userLimits := make(map[string]int)
 	usersDir := filepath.Join(s.stateDir, "users")
 	entries, err := os.ReadDir(usersDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -552,6 +572,7 @@ func (s *Service) applyLocked(cfg Config) error {
 		if err != nil {
 			return fmt.Errorf("load user %s for apply: %w", userName, err)
 		}
+		userLimits[userName] = NormalizeMaxIPs(uCfg.MaxIPs)
 		if uCfg.MTProto {
 			directSecrets = append(directSecrets, UserSecret{
 				Name:   userName,
@@ -592,6 +613,8 @@ func (s *Service) applyLocked(cfg Config) error {
 	} else {
 		s.tproxy.Stop()
 	}
+
+	s.ipGuard.SetUserLimits(userLimits)
 
 	return nil
 }
@@ -640,6 +663,7 @@ func (s *Service) buildUserLinks(host string, name string, u UserTelegramConfig)
 		Secret:               u.Secret,
 		MTProto:              u.MTProto,
 		Web:                  u.Web,
+		MaxIPs:               NormalizeMaxIPs(u.MaxIPs),
 		ServerMTProtoEnabled: s.config.Enabled,
 		ServerWebEnabled:     s.config.WebEnabled,
 		MTProtoLink:          mtprotoLink,
@@ -676,6 +700,19 @@ func (s *Service) SetUser(name string, u UserTelegramConfig) error {
 		return err
 	}
 	u.Secret = strings.TrimSpace(strings.ToLower(u.Secret))
+	if u.MaxIPs == 0 {
+		existing, existed, err := s.readExistingUserLocked(name)
+		if err != nil {
+			return err
+		}
+		if existed {
+			u.MaxIPs = NormalizeMaxIPs(existing.MaxIPs)
+		} else {
+			u.MaxIPs = DefaultUserMaxIPs
+		}
+	} else {
+		u.MaxIPs = NormalizeMaxIPs(u.MaxIPs)
+	}
 
 	b, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
@@ -685,17 +722,22 @@ func (s *Service) SetUser(name string, u UserTelegramConfig) error {
 	return s.commitWithRollbackLocked(s.userCfgPath(name), b, false, s.config, false)
 }
 
-func (s *Service) InitUser(name string, mtproto, web bool) (UserTelegramInfo, error) {
+func (s *Service) InitUser(name string, mtproto, web bool, maxIPs ...int) (UserTelegramInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sec, err := randomHexSecret()
 	if err != nil {
 		return UserTelegramInfo{}, err
 	}
+	limit := DefaultUserMaxIPs
+	if len(maxIPs) > 0 {
+		limit = NormalizeMaxIPs(maxIPs[0])
+	}
 	u := UserTelegramConfig{
 		Secret:  sec,
 		MTProto: mtproto,
 		Web:     web,
+		MaxIPs:  limit,
 	}
 	b, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
@@ -719,7 +761,10 @@ func (s *Service) NewUserSecret(name, currentHost string) (UserTelegramInfo, err
 		u = UserTelegramConfig{
 			MTProto: true,
 			Web:     true,
+			MaxIPs:  DefaultUserMaxIPs,
 		}
+	} else {
+		u.MaxIPs = NormalizeMaxIPs(u.MaxIPs)
 	}
 	sec, err := randomHexSecret()
 	if err != nil {

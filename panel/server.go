@@ -440,6 +440,7 @@ func (a *App) userCreate(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		TGMTProto *bool  `json:"tg_mtproto"`
 		TGWeb     *bool  `json:"tg_web"`
+		TGMaxIPs  *int   `json:"tg_max_ips"`
 	}
 	if json.NewDecoder(r.Body).Decode(&req) != nil || !nameRe.MatchString(req.Name) {
 		writeErr(w, http.StatusBadRequest, "Имя: латиница, цифры, дефис и подчёркивание, до 32 символов")
@@ -452,13 +453,17 @@ func (a *App) userCreate(w http.ResponseWriter, r *http.Request) {
 	if a.tg != nil {
 		mtproto := true
 		web := true
+		maxIPs := tgproxy.DefaultUserMaxIPs
 		if req.TGMTProto != nil {
 			mtproto = *req.TGMTProto
 		}
 		if req.TGWeb != nil {
 			web = *req.TGWeb
 		}
-		if _, err := a.tg.InitUser(req.Name, mtproto, web); err != nil {
+		if req.TGMaxIPs != nil {
+			maxIPs = tgproxy.NormalizeMaxIPs(*req.TGMaxIPs)
+		}
+		if _, err := a.tg.InitUser(req.Name, mtproto, web, maxIPs); err != nil {
 			log.Printf("telegram proxy init user %s error: %v", req.Name, err)
 		}
 	}
@@ -762,15 +767,21 @@ func (a *App) userTelegramSave(w http.ResponseWriter, r *http.Request) {
 		MTProto bool   `json:"mtproto"`
 		Web     bool   `json:"web"`
 		Secret  string `json:"secret"`
+		MaxIPs  *int   `json:"max_ips"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "Неверные данные: "+err.Error())
 		return
 	}
+	maxIPs := 0
+	if req.MaxIPs != nil {
+		maxIPs = tgproxy.NormalizeMaxIPs(*req.MaxIPs)
+	}
 	if err := a.tg.SetUser(name, tgproxy.UserTelegramConfig{
 		Secret:  req.Secret,
 		MTProto: req.MTProto,
 		Web:     req.Web,
+		MaxIPs:  maxIPs,
 	}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

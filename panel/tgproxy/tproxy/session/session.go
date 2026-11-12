@@ -33,6 +33,7 @@ const (
 type sessionOptions struct {
 	profile               *config.Profile
 	clientIP              string
+	guardID               string
 	limits                config.Limits
 	timeouts              config.Timeouts
 	budget                func(int, int, pendingClass) bool
@@ -102,6 +103,7 @@ func newCarrierLane() *carrierLane {
 type Session struct {
 	profile  *config.Profile
 	clientIP string
+	guardID  string
 	limits   config.Limits
 	timeouts config.Timeouts
 	budget   func(int, int, pendingClass) bool
@@ -150,6 +152,7 @@ func newSession(options sessionOptions) *Session {
 	result := &Session{
 		profile:               options.profile,
 		clientIP:              options.clientIP,
+		guardID:               options.guardID,
 		limits:                options.limits,
 		timeouts:              options.timeouts,
 		budget:                options.budget,

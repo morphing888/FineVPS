@@ -559,9 +559,11 @@ type UserInfo struct {
 	MonthUp       uint64  `json:"monthUp"`
 	TGMTProto     bool    `json:"tgMtproto"`
 	TGWeb         bool    `json:"tgWeb"`
+	TGMaxIPs      int     `json:"tgMaxIps"`
 	TGDirectConns int32   `json:"tgDirectConns"`
 	TGWebConns    int32   `json:"tgWebConns"`
 	TGConns       int32   `json:"tgConns"`
+	TGActiveIPs   int32   `json:"tgActiveIps"`
 }
 
 func (c *Collector) Users(t time.Time) []UserInfo {
@@ -582,6 +584,7 @@ func (c *Collector) Users(t time.Time) []UserInfo {
 				u.TGDirectConns = ps.DirectConns
 				u.TGWebConns = ps.WebConns
 				u.TGConns = ps.ActiveConns
+				u.TGActiveIPs = ps.ActiveIPs
 			}
 		}
 		u.Online = u.Enabled && ((l.LastHandshake > 0 && t.Unix()-l.LastHandshake < onlineAfter) || u.TGConns > 0)
@@ -627,15 +630,18 @@ func listUsers(state string) []UserInfo {
 		name := strings.TrimSuffix(e.Name(), ext)
 		tgMTProto := true
 		tgWeb := true
+		tgMaxIPs := tgproxy.DefaultUserMaxIPs
 		tgPath := filepath.Join(dir, name+".tg.json")
 		if b, err := os.ReadFile(tgPath); err == nil {
 			var tc struct {
 				MTProto bool `json:"mtproto"`
 				Web     bool `json:"web"`
+				MaxIPs  int  `json:"max_ips"`
 			}
 			if json.Unmarshal(b, &tc) == nil {
 				tgMTProto = tc.MTProto
 				tgWeb = tc.Web
+				tgMaxIPs = tgproxy.NormalizeMaxIPs(tc.MaxIPs)
 			}
 		}
 		out = append(out, UserInfo{
@@ -644,6 +650,7 @@ func listUsers(state string) []UserInfo {
 			Enabled:   ext == ".peer",
 			TGMTProto: tgMTProto,
 			TGWeb:     tgWeb,
+			TGMaxIPs:  tgMaxIPs,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })

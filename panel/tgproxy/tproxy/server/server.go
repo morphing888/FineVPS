@@ -215,7 +215,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, suffix string)
 		return
 	}
 	if suffix == "api/v1/ws" {
-		s.serveWebSocket(w, r)
+		s.serveWebSocket(w, r, clientIP)
 		return
 	}
 	token, ok := bearerToken(r.Header.Get("Authorization"))
@@ -227,9 +227,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, suffix string)
 	case "api/v1/session":
 		s.serveSession(w, r, token, clientIP)
 	case "api/v1/up":
-		s.serveUp(w, r, token)
+		s.serveUp(w, r, token, clientIP)
 	case "api/v1/down":
-		s.serveDown(w, r, token)
+		s.serveDown(w, r, token, clientIP)
 	default:
 		s.serveNotFound(w, r)
 	}
@@ -288,7 +288,7 @@ func (s *Server) serveSession(
 	_, _ = w.Write(result.Welcome)
 }
 
-func (s *Server) serveUp(w http.ResponseWriter, r *http.Request, token string) {
+func (s *Server) serveUp(w http.ResponseWriter, r *http.Request, token, clientIP string) {
 	if r.Method != http.MethodPost || !binaryContentType(r.Header.Get("Content-Type")) {
 		s.serveNotFound(w, r)
 		return
@@ -299,7 +299,7 @@ func (s *Server) serveUp(w http.ResponseWriter, r *http.Request, token string) {
 		return
 	}
 	value, err := s.manager.Get(token)
-	if err != nil {
+	if err != nil || !s.manager.ObserveClientIP(value, clientIP) {
 		s.serveNotFound(w, r)
 		return
 	}
@@ -343,7 +343,7 @@ func (s *Server) serveUp(w http.ResponseWriter, r *http.Request, token string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) serveDown(w http.ResponseWriter, r *http.Request, token string) {
+func (s *Server) serveDown(w http.ResponseWriter, r *http.Request, token, clientIP string) {
 	if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "" {
 		s.serveNotFound(w, r)
 		return
@@ -354,7 +354,7 @@ func (s *Server) serveDown(w http.ResponseWriter, r *http.Request, token string)
 		return
 	}
 	value, err := s.manager.Get(token)
-	if err != nil {
+	if err != nil || !s.manager.ObserveClientIP(value, clientIP) {
 		s.serveNotFound(w, r)
 		return
 	}
@@ -414,7 +414,7 @@ func (s *Server) serveDown(w http.ResponseWriter, r *http.Request, token string)
 	_, _ = w.Write(body)
 }
 
-func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request, clientIP string) {
 	if r.Header.Get("Sec-Websocket-Key") != "" {
 		if r.Header.Get("Upgrade") == "" {
 			r.Header.Set("Upgrade", "websocket")
@@ -442,7 +442,7 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.manager.Get(token)
-	if err != nil {
+	if err != nil || !s.manager.ObserveClientIP(value, clientIP) {
 		s.serveNotFound(w, r)
 		return
 	}

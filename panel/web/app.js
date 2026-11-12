@@ -445,6 +445,67 @@ function copyText(text, msg = "Скопировано") {
   toast(msg);
 }
 
+function normMaxIPs(v) {
+  const n = Number(v || 0);
+  if (n === 0) return 1;
+  return n < 0 ? -1 : n;
+}
+function nextMaxIPs(v) {
+  const cur = normMaxIPs(v);
+  return cur === 1 ? 2 : (cur === 2 ? -1 : 1);
+}
+function ipLimitBtnClass(v, activeIPs = 0) {
+  const cur = normMaxIPs(v);
+  return "tag-btn " + (cur < 0 ? "ip-unlimited" : "ip-limit") + (activeIPs > 0 ? " active" : "");
+}
+function ipLimitBtnText(v, activeIPs = 0) {
+  const cur = normMaxIPs(v);
+  const lim = cur < 0 ? "∞" : String(cur);
+  return activeIPs > 0 ? `${activeIPs}/${lim} IP` : `${lim} IP`;
+}
+function ipLimitBtnTitle(v, activeIPs = 0) {
+  const cur = normMaxIPs(v);
+  const desc = cur < 0 ? "без лимита" : `${cur} IP`;
+  const act = activeIPs > 0 ? ` • активно IP: ${activeIPs}` : "";
+  return `Лимит активных IP Telegram: ${desc}${act} (нажми: 1 → 2 → ∞)`;
+}
+function ipLimitToastText(v) {
+  const cur = normMaxIPs(v);
+  return cur === 1 ? "1 активный IP" : (cur === 2 ? "2 активных IP" : "без лимита IP");
+}
+
+async function cycleUserMaxIPs(u, btnEl) {
+  const enc = encodeURIComponent(u.name);
+  const prevVal = normMaxIPs(u.tgMaxIps);
+  const nextVal = nextMaxIPs(prevVal);
+  const activeIPs = u.tgActiveIps || 0;
+
+  if (btnEl) {
+    btnEl.className = ipLimitBtnClass(nextVal, activeIPs);
+    btnEl.textContent = ipLimitBtnText(nextVal, activeIPs);
+    btnEl.title = ipLimitBtnTitle(nextVal, activeIPs);
+    btnEl.blur();
+  }
+
+  try {
+    const info = await api("users/" + enc + "/telegram");
+    await api("users/" + enc + "/telegram", {
+      method: "POST",
+      body: { mtproto: info.mtproto, web: info.web, secret: info.secret, max_ips: nextVal }
+    });
+    u.tgMaxIps = nextVal;
+    toast(`Лимит Telegram для ${u.name}: ${ipLimitToastText(nextVal)}`);
+    refresh(true);
+  } catch (e) {
+    if (btnEl) {
+      btnEl.className = ipLimitBtnClass(prevVal, activeIPs);
+      btnEl.textContent = ipLimitBtnText(prevVal, activeIPs);
+      btnEl.title = ipLimitBtnTitle(prevVal, activeIPs);
+    }
+    toast("Ошибка: " + e.message);
+  }
+}
+
 async function toggleUserTG(u, proto, btnEl) {
   const enc = encodeURIComponent(u.name);
   const newMtproto = proto === "tg" ? !u.tgMtproto : u.tgMtproto;
@@ -462,7 +523,7 @@ async function toggleUserTG(u, proto, btnEl) {
     const info = await api("users/" + enc + "/telegram");
     await api("users/" + enc + "/telegram", {
       method: "POST",
-      body: { mtproto: newMtproto, web: newWeb, secret: info.secret }
+      body: { mtproto: newMtproto, web: newWeb, secret: info.secret, max_ips: normMaxIPs(info.max_ips) }
     });
     u.tgMtproto = newMtproto;
     u.tgWeb = newWeb;
@@ -504,13 +565,19 @@ function renderUsers(list, force = false) {
     btnWeb.title = "Web-мост: " + (u.tgWeb ? "включен" : "отключен") + (webActive ? ` • активно: ${u.tgWebConns}` : "") + " (нажми для переключения)";
     btnWeb.onclick = () => toggleUserTG(u, "web", btnWeb);
 
-    tgCol.append(btnTG, btnWeb);
+    const activeIPs = u.tgActiveIps || 0;
+    const btnIP = el("button", ipLimitBtnClass(u.tgMaxIps, activeIPs), ipLimitBtnText(u.tgMaxIps, activeIPs));
+    btnIP.type = "button";
+    btnIP.title = ipLimitBtnTitle(u.tgMaxIps, activeIPs);
+    btnIP.onclick = () => cycleUserMaxIPs(u, btnIP);
+
+    tgCol.append(btnTG, btnWeb, btnIP);
 
     const [cls, text] = stateOf(u);
     const st = el("div");
     const tagEl = el("span", "tag " + cls, text);
     if (u.tgConns > 0) {
-      tagEl.title = `Telegram: ${u.tgConns} активных соед.`;
+      tagEl.title = `Telegram: ${u.tgConns} активных соед.` + (activeIPs > 0 ? ` (${activeIPs} IP)` : "");
     }
     st.append(tagEl);
     const sp = el("div");
@@ -628,7 +695,7 @@ async function switchQRTab(tab) {
           try {
             await api("users/" + enc + "/telegram", {
               method: "POST",
-              body: { mtproto: true, web: curQRTGInfo.web, secret: curQRTGInfo.secret }
+              body: { mtproto: true, web: curQRTGInfo.web, secret: curQRTGInfo.secret, max_ips: normMaxIPs(curQRTGInfo.max_ips) }
             });
             curQRTGInfo.mtproto = true;
             toast("MTProto Proxy включен для " + curQRUser);
@@ -688,7 +755,7 @@ async function switchQRTab(tab) {
           try {
             await api("users/" + enc + "/telegram", {
               method: "POST",
-              body: { mtproto: curQRTGInfo.mtproto, web: true, secret: curQRTGInfo.secret }
+              body: { mtproto: curQRTGInfo.mtproto, web: true, secret: curQRTGInfo.secret, max_ips: normMaxIPs(curQRTGInfo.max_ips) }
             });
             curQRTGInfo.web = true;
             toast("Web мост включен для " + curQRUser);
@@ -750,6 +817,18 @@ $("qr-tab-web").onclick = () => switchQRTab("web");
 $("qr-close").onclick = () => $("qr-dialog").close();
 
 let curSecUser = "";
+let curSecMaxIPs = 1;
+
+function syncSecIPPills(val) {
+  curSecMaxIPs = normMaxIPs(val);
+  document.querySelectorAll("#sec-ip-pills button[data-max-ips]").forEach(b => {
+    b.setAttribute("aria-pressed", String(Number(b.dataset.maxIps) === curSecMaxIPs));
+  });
+}
+
+document.querySelectorAll("#sec-ip-pills button[data-max-ips]").forEach(b => {
+  b.onclick = () => syncSecIPPills(Number(b.dataset.maxIps));
+});
 
 async function openSecretDialog(name) {
   curSecUser = name;
@@ -759,6 +838,7 @@ async function openSecretDialog(name) {
   try {
     const info = await api("users/" + encodeURIComponent(name) + "/telegram");
     $("sec-input").value = info.secret || "";
+    syncSecIPPills(info.max_ips);
     $("secret-dialog").showModal();
   } catch (e) {
     toast("Ошибка: " + e.message);
@@ -794,9 +874,9 @@ $("sec-save").onclick = async () => {
     const info = await api("users/" + encodeURIComponent(curSecUser) + "/telegram");
     await api("users/" + encodeURIComponent(curSecUser) + "/telegram", {
       method: "POST",
-      body: { mtproto: info.mtproto, web: info.web, secret }
+      body: { mtproto: info.mtproto, web: info.web, secret, max_ips: curSecMaxIPs }
     });
-    toast("Секрет сохранён");
+    toast("Настройки сохранены");
     $("secret-dialog").close();
     refresh(true);
   } catch (e) {
@@ -830,6 +910,7 @@ async function remove(u) {
 }
 let addTGOn = true;
 let addWebOn = true;
+let addMaxIPs = 1;
 
 if ($("add-tg-btn")) {
   $("add-tg-btn").onclick = () => {
@@ -845,6 +926,15 @@ if ($("add-web-btn")) {
   };
 }
 
+if ($("add-ip-btn")) {
+  $("add-ip-btn").onclick = () => {
+    addMaxIPs = nextMaxIPs(addMaxIPs);
+    $("add-ip-btn").className = ipLimitBtnClass(addMaxIPs, 0);
+    $("add-ip-btn").textContent = ipLimitBtnText(addMaxIPs, 0);
+    $("add-ip-btn").title = ipLimitBtnTitle(addMaxIPs, 0);
+  };
+}
+
 $("add-form").onsubmit = async ev => {
   ev.preventDefault();
   const err = $("add-error"), inp = $("add-name"), b = ev.target.querySelector("button[type=submit]");
@@ -852,7 +942,7 @@ $("add-form").onsubmit = async ev => {
   b.disabled = true;
   try {
     const name = inp.value.trim();
-    await api("users", { method: "POST", body: { name, tg_mtproto: addTGOn, tg_web: addWebOn } });
+    await api("users", { method: "POST", body: { name, tg_mtproto: addTGOn, tg_web: addWebOn, tg_max_ips: addMaxIPs } });
     inp.value = "";
     await refresh(true);
     openQR(name);

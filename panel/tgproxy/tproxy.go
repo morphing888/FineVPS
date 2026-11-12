@@ -71,6 +71,7 @@ func (d *dynamicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type TproxyEngine struct {
 	stateDir       string
 	mu             sync.Mutex
+	ipGuard        *UserIPGuard
 	server         *http.Server
 	app            *appserver.Server
 	dynHandler     *dynamicHandler
@@ -84,6 +85,12 @@ type TproxyEngine struct {
 
 func NewTproxyEngine(stateDir string) *TproxyEngine {
 	return &TproxyEngine{stateDir: stateDir}
+}
+
+func (t *TproxyEngine) SetIPGuard(g *UserIPGuard) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ipGuard = g
 }
 
 func buildTproxyProfiles(host, rawBackendAddr string, profiles []UserProfile, defaultLimits config.Limits) ([]config.Profile, error) {
@@ -159,6 +166,7 @@ func (t *TproxyEngine) Start(publicHost string, port int, rawBackendAddr string,
 	cfg.PublicHostname = host
 	cfg.Listen = fmt.Sprintf("0.0.0.0:%d", port)
 	cfg.AdminListen = "127.0.0.1:0"
+	cfg.IPGuard = t.ipGuard
 
 	pList, err := buildTproxyProfiles(host, rawBackendAddr, profiles, cfg.Limits)
 	if err != nil {

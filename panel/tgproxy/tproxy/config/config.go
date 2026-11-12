@@ -111,21 +111,29 @@ type Timeouts struct {
 	Shutdown          Duration `json:"shutdown"`
 }
 
+type IPAuthorizer interface {
+	IsCoolingDown(profileName, clientIP string) bool
+	AcquireSessionDetached(profileName, clientIP, sessionID string, closeFn func()) (allowed bool, evictFns []func())
+	ObserveSession(profileName, sessionID, clientIP string) bool
+	ReleaseSession(profileName, sessionID string)
+}
+
 type Config struct {
-	PublicHostname   string    `json:"public_hostname"`
-	BasePath         string    `json:"base_path"`
-	Listen           string    `json:"listen"`
-	AdminListen      string    `json:"admin_listen"`
-	PublicDir        string    `json:"public_dir"`
-	PublicUpstream   string    `json:"public_upstream"`
-	StaticRoutes     string    `json:"static_routes"`
-	TokenKeyFile     string    `json:"token_key_file"`
-	ProfilesFile     string    `json:"profiles_file"`
-	EnablePprof      bool      `json:"enable_pprof"`
-	Limits           Limits    `json:"limits"`
-	Timeouts         Timeouts  `json:"timeouts"`
-	Profiles         []Profile `json:"-"`
-	LegacyTokenDrain bool      `json:"-"`
+	PublicHostname   string       `json:"public_hostname"`
+	BasePath         string       `json:"base_path"`
+	Listen           string       `json:"listen"`
+	AdminListen      string       `json:"admin_listen"`
+	PublicDir        string       `json:"public_dir"`
+	PublicUpstream   string       `json:"public_upstream"`
+	StaticRoutes     string       `json:"static_routes"`
+	TokenKeyFile     string       `json:"token_key_file"`
+	ProfilesFile     string       `json:"profiles_file"`
+	EnablePprof      bool         `json:"enable_pprof"`
+	Limits           Limits       `json:"limits"`
+	Timeouts         Timeouts     `json:"timeouts"`
+	Profiles         []Profile    `json:"-"`
+	LegacyTokenDrain bool         `json:"-"`
+	IPGuard          IPAuthorizer `json:"-"`
 }
 
 type profileFile struct {

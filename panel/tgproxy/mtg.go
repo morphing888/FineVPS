@@ -99,6 +99,7 @@ type UserStats struct {
 	DirectConns int32  `json:"direct_conns"`
 	WebConns    int32  `json:"web_conns"`
 	ActiveConns int32  `json:"active_conns"`
+	ActiveIPs   int32  `json:"active_ips"`
 	LastActive  int64  `json:"last_active"`
 	RxBytes     uint64 `json:"rx_bytes"`
 	TxBytes     uint64 `json:"tx_bytes"`
@@ -442,6 +443,7 @@ type mtgGeneration struct {
 
 type MtgEngine struct {
 	mu           sync.Mutex
+	ipGuard      atomic.Pointer[UserIPGuard]
 	directDisp   *directDispatcher
 	directGen    *directProxyGen
 	currentGen   *mtgGeneration
@@ -457,6 +459,10 @@ func NewMtgEngine() *MtgEngine {
 	return &MtgEngine{
 		userStats: make(map[string]*UserStats),
 	}
+}
+
+func (e *MtgEngine) SetIPGuard(g *UserIPGuard) {
+	e.ipGuard.Store(g)
 }
 
 func (e *MtgEngine) recordTraffic(userName string, rx, tx uint64) {
@@ -505,17 +511,32 @@ func (e *MtgEngine) recordConn(userName string, delta int32, isWeb bool) {
 
 func (e *MtgEngine) GetUserStats() map[string]UserStats {
 	e.userStatsMu.RLock()
-	defer e.userStatsMu.RUnlock()
 	res := make(map[string]UserStats, len(e.userStats))
 	for k, v := range e.userStats {
 		res[k] = *v
 	}
+	e.userStatsMu.RUnlock()
+
+	if guard := e.ipGuard.Load(); guard != nil {
+		for name, ips := range guard.GetActiveIPCounts() {
+			st := res[name]
+			st.Name = name
+			st.ActiveIPs = ips
+			res[name] = st
+		}
+	}
 	return res
+}
+
+type mtgStreamMeta struct {
+	remoteIP string
+	closer   func()
 }
 
 type mtgProxyEventRouter struct {
 	engine            *MtgEngine
 	directSecretNames []string
+	streamMeta        sync.Map // streamID -> mtgStreamMeta
 	streamUsers       sync.Map // streamID -> userName
 	dcStreams         sync.Map // streamID -> struct{}
 	closed            atomic.Bool
@@ -523,12 +544,52 @@ type mtgProxyEventRouter struct {
 
 func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 	switch e := evt.(type) {
+	case mtglib.EventStart:
+		var closer func()
+		if sc, ok := ctx.(interface{ Close() }); ok {
+			closer = sc.Close
+		}
+		if r.closed.Load() {
+			if closer != nil {
+				closer()
+			}
+			return
+		}
+		remoteIP := ""
+		if len(e.RemoteIP) > 0 {
+			remoteIP = e.RemoteIP.String()
+		}
+		r.streamMeta.Store(e.StreamID(), mtgStreamMeta{
+			remoteIP: remoteIP,
+			closer:   closer,
+		})
 	case mtglib.EventClientMatched:
 		if r.closed.Load() {
+			if sc, ok := ctx.(interface{ Close() }); ok {
+				sc.Close()
+			}
 			return
 		}
 		if e.SecretIdx >= 0 && e.SecretIdx < len(r.directSecretNames) {
 			user := r.directSecretNames[e.SecretIdx]
+			var meta mtgStreamMeta
+			if val, ok := r.streamMeta.Load(e.StreamID()); ok {
+				meta = val.(mtgStreamMeta)
+			}
+			if meta.closer == nil {
+				if sc, ok := ctx.(interface{ Close() }); ok {
+					meta.closer = sc.Close
+				}
+			}
+			if guard := r.engine.ipGuard.Load(); guard != nil && meta.remoteIP != "" {
+				if !guard.AcquireDirect(user, meta.remoteIP, e.StreamID(), meta.closer) {
+					r.streamMeta.Delete(e.StreamID())
+					if meta.closer != nil {
+						meta.closer()
+					}
+					return
+				}
+			}
 			if _, loaded := r.streamUsers.LoadOrStore(e.StreamID(), user); !loaded {
 				r.engine.recordConn(user, 1, false)
 			}
@@ -541,6 +602,9 @@ func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 			} else {
 				r.engine.recordTraffic(user, uint64(e.Traffic), 0)
 			}
+			if guard := r.engine.ipGuard.Load(); guard != nil {
+				guard.TouchDirect(user, e.StreamID())
+			}
 		}
 	case mtglib.EventConnectedToDC:
 		if r.closed.Load() {
@@ -550,9 +614,13 @@ func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 			r.engine.connected.Add(1)
 		}
 	case mtglib.EventFinish:
+		r.streamMeta.Delete(e.StreamID())
 		if val, ok := r.streamUsers.LoadAndDelete(e.StreamID()); ok {
 			user := val.(string)
 			r.engine.recordConn(user, -1, false)
+			if guard := r.engine.ipGuard.Load(); guard != nil {
+				guard.ReleaseDirect(user, e.StreamID())
+			}
 		}
 		if _, loaded := r.dcStreams.LoadAndDelete(e.StreamID()); loaded {
 			if v := r.engine.connected.Add(-1); v < 0 {
@@ -564,9 +632,17 @@ func (r *mtgProxyEventRouter) Send(ctx context.Context, evt mtglib.Event) {
 
 func (r *mtgProxyEventRouter) CloseAndDrain() {
 	r.closed.Store(true)
+	r.streamMeta.Range(func(key, _ any) bool {
+		r.streamMeta.Delete(key)
+		return true
+	})
 	r.streamUsers.Range(func(key, _ any) bool {
 		if val, ok := r.streamUsers.LoadAndDelete(key); ok {
-			r.engine.recordConn(val.(string), -1, false)
+			user := val.(string)
+			r.engine.recordConn(user, -1, false)
+			if guard := r.engine.ipGuard.Load(); guard != nil {
+				guard.ReleaseDirect(user, key.(string))
+			}
 		}
 		return true
 	})

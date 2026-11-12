@@ -344,6 +344,8 @@ dialog h2 { font-size: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .tag-btn:active { transform: translateY(0); filter: brightness(0.95); }
 .tag-btn.on { --t: 69 192 138; }   /* Green when on */
 .tag-btn.off { --t: 224 107 107; } /* Red when off */
+.tag-btn.ip-limit { --t: 47 143 224; }
+.tag-btn.ip-unlimited { --t: 146 151 163; }
 .tag-btn.active {
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .4), 0 0 12px 2px rgb(var(--t) / .6);
   animation: pulse-glow 2s infinite ease-in-out;
